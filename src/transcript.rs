@@ -188,5 +188,7 @@ fn modulus<F>() -> U256
 where
     F: PrimeField<Repr = halo2_proofs::halo2curves::serde::Repr<32>>,
 {
-    U256::from_le_bytes((-F::ONE).to_repr().inner().clone()) + U256::from(1)
+    #[allow(clippy::clone_on_copy)]
+    let upper = U256::from_le_bytes((-F::ONE).to_repr().inner().clone());
+    upper + U256::from(1)
 }

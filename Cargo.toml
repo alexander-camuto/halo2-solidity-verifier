@@ -15,11 +15,11 @@ itertools = "0.11.0"
 blake2b_simd = "1"
 
 # For feature = "evm"
-revm = { version = "3.3.0", default-features = false, optional = true }
+revm = { version = "14.0.1", default-features = false, optional = true }
 
 [dev-dependencies]
 rand = "0.8.5"
-revm = { version = "3.3.0", default-features = false }
+revm = { version = "14.0.1", default-features = false }
 halo2_maingate = { git = "https://github.com/zkonduit/halo2wrong", branch = "ac/chunked-mv-lookup", package = "maingate" }
 
 

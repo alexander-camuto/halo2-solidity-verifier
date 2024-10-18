@@ -1,10 +1,7 @@
-use crate::codegen::{
-    template::Halo2VerifyingKey,
-    BatchOpenScheme::{self, Bdfg21, Gwc19},
-};
+use crate::codegen::BatchOpenScheme::{self, Bdfg21, Gwc19};
 use halo2_proofs::{
     halo2curves::{bn256, ff::PrimeField, CurveAffine},
-    plonk::{Any, Column, ConstraintSystem},
+    plonk::{Any, Column, ConstraintSystem, Expression, Gate},
 };
 use itertools::{chain, izip, Itertools};
 use ruint::{aliases::U256, UintTryFrom};
@@ -14,6 +11,8 @@ use std::{
     fmt::{self, Display, Formatter},
     ops::{Add, Sub},
 };
+
+use super::template::VerifyingCache;
 
 #[derive(Debug)]
 #[cfg(feature = "mv-lookup")]
@@ -391,13 +390,13 @@ pub(crate) struct Data {
 impl Data {
     pub(crate) fn new(
         meta: &ConstraintSystemMeta,
-        vk: &Halo2VerifyingKey,
+        vk: &VerifyingCache,
         vk_mptr: Ptr,
         proof_cptr: Ptr,
     ) -> Self {
-        let fixed_comm_mptr = vk_mptr + vk.constants.len();
-        let permutation_comm_mptr = fixed_comm_mptr + 2 * vk.fixed_comms.len();
-        let challenge_mptr = permutation_comm_mptr + 2 * vk.permutation_comms.len();
+        let fixed_comm_mptr: Ptr = vk_mptr + vk.constants().len();
+        let permutation_comm_mptr = fixed_comm_mptr + 2 * vk.fixed_comms().len();
+        let challenge_mptr = vk_mptr + vk.len(false);
         let theta_mptr = challenge_mptr + meta.challenge_indices.len();
 
         let advice_comm_start = proof_cptr;
@@ -415,6 +414,10 @@ impl Data {
         let permutation_z_eval_cptr = permutation_eval_cptr + meta.num_permutations();
         let lookup_eval_cptr = permutation_z_eval_cptr + 3 * meta.num_permutation_zs - 1;
         let w_cptr = lookup_eval_cptr + 3 * meta.num_lookups();
+        let l_0 = "INSTANCE_EVAL_MPTR";
+        let quotient_eval = "QUOTIENT_EVAL_MPTR";
+        let quotient_x = "QUOTIENT_X_MPTR";
+        let quotient_y = "QUOTIENT_Y_MPTR";
 
         let fixed_comms = EcPoint::range(fixed_comm_mptr)
             .take(meta.num_fixeds)
@@ -440,10 +443,7 @@ impl Data {
             .take(meta.num_lookup_phis)
             .collect();
         let random_comm = random_comm_start.into();
-        let computed_quotient_comm = EcPoint::new(
-            Ptr::memory("QUOTIENT_X_MPTR"),
-            Ptr::memory("QUOTIENT_Y_MPTR"),
-        );
+        let computed_quotient_comm = EcPoint::new(Ptr::memory(quotient_x), Ptr::memory(quotient_y));
 
         let challenges = meta
             .challenge_indices
@@ -451,7 +451,7 @@ impl Data {
             .map(|idx| challenge_mptr + *idx)
             .map_into()
             .collect_vec();
-        let instance_eval = Ptr::memory("INSTANCE_EVAL_MPTR").into();
+        let instance_eval = Ptr::memory(l_0).into();
         let advice_evals = izip!(
             meta.advice_queries.iter().cloned(),
             Word::range(advice_eval_cptr)
@@ -476,7 +476,7 @@ impl Data {
             .take(3 * meta.num_lookup_phis)
             .tuples()
             .collect_vec();
-        let computed_quotient_eval = Ptr::memory("QUOTIENT_EVAL_MPTR").into();
+        let computed_quotient_eval = Ptr::memory(quotient_eval).into();
 
         Self {
             challenge_mptr,
@@ -511,13 +511,13 @@ impl Data {
 impl Data {
     pub(crate) fn new(
         meta: &ConstraintSystemMeta,
-        vk: &Halo2VerifyingKey,
+        vk: &VerifyingCache,
         vk_mptr: Ptr,
         proof_cptr: Ptr,
     ) -> Self {
-        let fixed_comm_mptr = vk_mptr + vk.constants.len();
-        let permutation_comm_mptr = fixed_comm_mptr + 2 * vk.fixed_comms.len();
-        let challenge_mptr = permutation_comm_mptr + 2 * vk.permutation_comms.len();
+        let fixed_comm_mptr: Ptr = vk_mptr + vk.constants().len();
+        let permutation_comm_mptr = fixed_comm_mptr + 2 * vk.fixed_comms().len();
+        let challenge_mptr = vk_mptr + vk.len(false);
         let theta_mptr = challenge_mptr + meta.challenge_indices.len();
 
         let advice_comm_start = proof_cptr;
@@ -589,7 +589,7 @@ impl Data {
             Word::range(permutation_eval_cptr)
         )
         .collect();
-        let permutation_z_evals = Word::range(permutation_z_eval_cptr)
+        let permutation_z_evals: Vec<(Word, Word, Word)> = Word::range(permutation_z_eval_cptr)
             .take(3 * meta.num_permutation_zs)
             .tuples()
             .collect_vec();
@@ -913,7 +913,115 @@ pub(crate) fn fe_to_u256<F>(fe: impl Borrow<F>) -> U256
 where
     F: PrimeField<Repr = halo2_proofs::halo2curves::serde::Repr<32>>,
 {
+    #[allow(clippy::clone_on_copy)]
     U256::from_le_bytes(fe.borrow().to_repr().inner().clone())
+}
+
+#[cfg(feature = "mv-lookup")]
+pub(crate) fn expression_consts<F>(cs: &ConstraintSystem<F>) -> Vec<F>
+where
+    F: PrimeField<Repr = halo2_proofs::halo2curves::serde::Repr<32>>,
+{
+    fn collect_constants<F: PrimeField>(expression: &Expression<F>, constants: &mut Vec<F>) {
+        match expression {
+            Expression::Constant(constant) => {
+                constants.push(*constant);
+            }
+            Expression::Negated(inner) => {
+                collect_constants(inner, constants);
+            }
+            Expression::Sum(lhs, rhs) => {
+                collect_constants(lhs, constants);
+                collect_constants(rhs, constants);
+            }
+            Expression::Product(lhs, rhs) => {
+                collect_constants(lhs, constants);
+                collect_constants(rhs, constants);
+            }
+            Expression::Scaled(inner, scalar) => {
+                collect_constants(inner, constants);
+                // we consider scalar values constants
+                constants.push(*scalar);
+            }
+            _ => {}
+        }
+    }
+
+    let mut inputs_consts: Vec<F> = Vec::new();
+    cs.gates()
+        .iter()
+        .flat_map(Gate::polynomials)
+        .for_each(|expression| collect_constants(expression, &mut inputs_consts));
+    let evaluate_lookup_consts = |expressions: &Vec<_>, constants: &mut Vec<F>| {
+        expressions.iter().for_each(|expression| {
+            collect_constants(expression, constants);
+        });
+    };
+    cs.lookups().iter().for_each(|lookup| {
+        let expressions: &Vec<Vec<Expression<F>>> = lookup.input_expressions();
+        expressions.iter().for_each(|arg| {
+            evaluate_lookup_consts(arg, &mut inputs_consts);
+        });
+    });
+    // Remove duplicates while preserving order
+    let mut unique_inputs_consts = Vec::new();
+    for const_value in inputs_consts.clone() {
+        if !unique_inputs_consts.contains(&const_value) {
+            unique_inputs_consts.push(const_value);
+        }
+    }
+    unique_inputs_consts
+}
+
+#[cfg(not(feature = "mv-lookup"))]
+pub(crate) fn expression_consts<F>(cs: &ConstraintSystem<F>) -> Vec<F>
+where
+    F: PrimeField<Repr = halo2_proofs::halo2curves::serde::Repr<32>>,
+{
+    fn collect_constants<F: PrimeField>(expression: &Expression<F>, constants: &mut Vec<F>) {
+        match expression {
+            Expression::Constant(constant) => {
+                constants.push(*constant);
+            }
+            Expression::Negated(inner) => {
+                collect_constants(inner, constants);
+            }
+            Expression::Sum(lhs, rhs) => {
+                collect_constants(lhs, constants);
+                collect_constants(rhs, constants);
+            }
+            Expression::Product(lhs, rhs) => {
+                collect_constants(lhs, constants);
+                collect_constants(rhs, constants);
+            }
+            Expression::Scaled(inner, scalar) => {
+                collect_constants(inner, constants);
+                // we consider scalar values constants
+                constants.push(*scalar);
+            }
+            _ => {}
+        }
+    }
+
+    let mut inputs_consts: Vec<F> = Vec::new();
+    cs.gates()
+        .iter()
+        .flat_map(Gate::polynomials)
+        .for_each(|expression| collect_constants(expression, &mut inputs_consts));
+    cs.lookups().iter().for_each(|lookup| {
+        let expressions: &Vec<Expression<F>> = lookup.input_expressions();
+        expressions.iter().for_each(|arg| {
+            collect_constants(arg, &mut inputs_consts);
+        });
+    });
+    // Remove duplicates while preserving order
+    let mut unique_inputs_consts = Vec::new();
+    for const_value in inputs_consts.clone() {
+        if !unique_inputs_consts.contains(&const_value) {
+            unique_inputs_consts.push(const_value);
+        }
+    }
+    unique_inputs_consts
 }
 
 pub(crate) fn to_u256_be_bytes<T>(value: T) -> [u8; 32]

@@ -5,7 +5,9 @@ use crate::{
     FN_SIG_VERIFY_PROOF, FN_SIG_VERIFY_PROOF_WITH_VK_ADDRESS,
 };
 use halo2_proofs::halo2curves::bn256::{Bn256, Fr};
+use rand::Rng;
 use rand::{rngs::StdRng, RngCore, SeedableRng};
+use revm::primitives::Address;
 use sha3::Digest;
 use std::{fs::File, io::Write};
 
@@ -56,16 +58,20 @@ fn run_render<C: halo2::TestCircuit<Fr>>() {
     let verifier_creation_code = compile_solidity(verifier_solidity);
     let verifier_creation_code_size = verifier_creation_code.len();
 
-    let mut evm = Evm::default();
-    let verifier_address = evm.create(verifier_creation_code);
+    let mut evm = Evm::unlimited();
+    let (verifier_address, gas_cost) = evm.create(verifier_creation_code);
     let verifier_runtime_code_size = evm.code_size(verifier_address);
 
     println!("Verifier creation code size: {verifier_creation_code_size}");
     println!("Verifier runtime code size: {verifier_runtime_code_size}");
+    println!("Gas deployment cost verifier: {gas_cost}");
 
     let (gas_cost, output) = evm.call(verifier_address, encode_calldata(None, &proof, &instances));
     assert_eq!(output, [vec![0; 31], vec![1]].concat());
-    println!("Gas cost: {gas_cost}");
+    println!("Gas cost conjoined: {gas_cost}");
+
+    // Fuzzing tests
+    bit_flip_fuzzing_test::<C>(verifier_address, proof, instances, &mut evm);
 }
 
 fn run_render_separately<C: halo2::TestCircuit<Fr>>() {
@@ -80,7 +86,7 @@ fn run_render_separately<C: halo2::TestCircuit<Fr>>() {
     let verifier_creation_code_size = verifier_creation_code.len();
 
     let mut evm = Evm::default();
-    let verifier_address = evm.create(verifier_creation_code);
+    let (verifier_address, _gas_cost) = evm.create(verifier_creation_code);
     let verifier_runtime_code_size = evm.code_size(verifier_address);
 
     println!("Verifier creation code size: {verifier_creation_code_size}");
@@ -96,16 +102,48 @@ fn run_render_separately<C: halo2::TestCircuit<Fr>>() {
 
         let (verifier_solidity, vk_solidity) = generator.render_separately().unwrap();
         assert_eq!(deployed_verifier_solidity, verifier_solidity);
+        // // print verifier_solidity
+        // println!("Verifier solidity: {verifier_solidity}");
+        // print vk_solidity
+        // println!("VK solidity: {vk_solidity}");
+        // VK creation code size
 
         let vk_creation_code = compile_solidity(&vk_solidity);
-        let vk_address = evm.create(vk_creation_code);
+        let vk_creation_code_size = vk_creation_code.len();
+        println!("VK creation code size: {vk_creation_code_size}");
+        let (vk_address, gas_cost) = evm.create(vk_creation_code);
+        let vk_runtime_code_size = evm.code_size(vk_address);
+        println!("VK runtime code size: {vk_runtime_code_size}");
+        println!("Gas deployment cost VK: {gas_cost}");
 
         let (gas_cost, output) = evm.call(
             verifier_address,
             encode_calldata(Some(vk_address.into()), &proof, &instances),
         );
         assert_eq!(output, [vec![0; 31], vec![1]].concat());
-        println!("Gas cost: {gas_cost}");
+        println!("Gas cost separate: {gas_cost}");
+        bit_flip_fuzzing_test::<C>(verifier_address, proof, instances, &mut evm);
+    }
+}
+
+fn bit_flip_fuzzing_test<C: halo2::TestCircuit<Fr>>(
+    verifier_address: Address,
+    proof: Vec<u8>,
+    instances: Vec<Fr>,
+    evm: &mut Evm,
+) {
+    let mut rng = rand::thread_rng();
+    for i in 0..10 {
+        let mut modified_proof = proof.clone();
+        let random_byte = rng.gen_range(0..modified_proof.len());
+        let random_bit = rng.gen_range(0..8);
+        modified_proof[random_byte] ^= 1 << random_bit;
+
+        evm.call_fail(
+            verifier_address,
+            encode_calldata(None, &modified_proof, &instances),
+        );
+        println!("Modified proof {} failed verification as expected", i);
     }
 }
 
@@ -165,7 +203,7 @@ mod halo2 {
     pub fn create_testdata_bdfg21<C: TestCircuit<bn256::Fr>>(
         k: u32,
         acc_encoding: Option<AccumulatorEncoding>,
-        mut rng: impl RngCore + Clone + Sync + Send,
+        mut rng: impl RngCore + Clone + Send + Sync,
     ) -> (
         ParamsKZG<bn256::Bn256>,
         VerifyingKey<bn256::G1Affine>,
@@ -258,6 +296,7 @@ mod halo2 {
         F1: PrimeField<Repr = halo2_proofs::halo2curves::serde::Repr<32>>,
         F2: PrimeField<Repr = halo2_proofs::halo2curves::serde::Repr<32>>,
     {
+        #[allow(clippy::clone_on_copy)]
         let big = U256::from_le_bytes(fe.borrow().to_repr().inner().clone());
         let mask = &((U256::from(1) << num_limb_bits) - U256::from(1));
         (0usize..)
@@ -342,8 +381,6 @@ mod halo2 {
                 Column<Instance>,
             );
             type FloorPlanner = SimpleFloorPlanner;
-            #[cfg(feature = "halo2_circuit_params")]
-            type Params = ();
 
             fn without_witnesses(&self) -> Self {
                 unimplemented!()
@@ -573,8 +610,6 @@ mod halo2 {
         {
             type Config = MainGateWithRangeConfig;
             type FloorPlanner = SimpleFloorPlanner;
-            #[cfg(feature = "halo2_circuit_params")]
-            type Params = ();
 
             fn without_witnesses(&self) -> Self {
                 unimplemented!()

@@ -3,6 +3,8 @@
 pragma solidity ^0.8.0;
 
 contract Halo2Verifier {
+    uint256 internal constant    DELTA = 4131629893567559867359510883348571134090853742863529169391034518566172092834;
+    uint256 internal constant        R = 21888242871839275222246405745257275088548364400416034343698204186575808495617; 
     uint256 internal constant    PROOF_LEN_CPTR = {{ proof_len_cptr }};
     uint256 internal constant        PROOF_CPTR = {{ proof_cptr }};
     uint256 internal constant NUM_INSTANCE_CPTR = {{ proof_cptr + (proof_len / 32) }};
@@ -70,11 +72,6 @@ contract Halo2Verifier {
     uint256 internal constant   PAIRING_RHS_Y_MPTR = {{ theta_mptr + 25 }};
 
     function verifyProof(
-        {%- match self.embedded_vk %}
-        {%- when None %}
-        address vk,
-        {%- else %}
-        {%- endmatch %}
         bytes calldata proof,
         uint256[] calldata instances
     ) public returns (bool) {
@@ -122,7 +119,7 @@ contract Halo2Verifier {
 
             // Batch invert values in memory[mptr_start..mptr_end] in place.
             // Return updated (success).
-            function batch_invert(success, mptr_start, mptr_end, r) -> ret {
+            function batch_invert(success, mptr_start, mptr_end) -> ret {
                 let gp_mptr := mptr_end
                 let gp := mload(mptr_start)
                 let mptr := add(mptr_start, 0x20)
@@ -131,19 +128,19 @@ contract Halo2Verifier {
                     lt(mptr, sub(mptr_end, 0x20))
                     {}
                 {
-                    gp := mulmod(gp, mload(mptr), r)
+                    gp := mulmod(gp, mload(mptr), R)
                     mstore(gp_mptr, gp)
                     mptr := add(mptr, 0x20)
                     gp_mptr := add(gp_mptr, 0x20)
                 }
-                gp := mulmod(gp, mload(mptr), r)
+                gp := mulmod(gp, mload(mptr), R)
 
                 mstore(gp_mptr, 0x20)
                 mstore(add(gp_mptr, 0x20), 0x20)
                 mstore(add(gp_mptr, 0x40), 0x20)
                 mstore(add(gp_mptr, 0x60), gp)
-                mstore(add(gp_mptr, 0x80), sub(r, 2))
-                mstore(add(gp_mptr, 0xa0), r)
+                mstore(add(gp_mptr, 0x80), sub(R, 2))
+                mstore(add(gp_mptr, 0xa0), R)
                 ret := and(success, staticcall(gas(), 0x05, gp_mptr, 0xc0, gp_mptr, 0x20))
                 let all_inv := mload(gp_mptr)
 
@@ -155,14 +152,14 @@ contract Halo2Verifier {
                     lt(second_mptr, mptr)
                     {}
                 {
-                    let inv := mulmod(all_inv, mload(gp_mptr), r)
-                    all_inv := mulmod(all_inv, mload(mptr), r)
+                    let inv := mulmod(all_inv, mload(gp_mptr), R)
+                    all_inv := mulmod(all_inv, mload(mptr), R)
                     mstore(mptr, inv)
                     mptr := sub(mptr, 0x20)
                     gp_mptr := sub(gp_mptr, 0x20)
                 }
-                let inv_first := mulmod(all_inv, mload(second_mptr), r)
-                let inv_second := mulmod(all_inv, mload(first_mptr), r)
+                let inv_first := mulmod(all_inv, mload(second_mptr), R)
+                let inv_second := mulmod(all_inv, mload(first_mptr), R)
                 mstore(first_mptr, inv_first)
                 mstore(second_mptr, inv_second)
             }
@@ -217,22 +214,16 @@ contract Halo2Verifier {
 
             // Modulus
             let q := 21888242871839275222246405745257275088696311157297823662689037894645226208583 // BN254 base field
-            let r := 21888242871839275222246405745257275088548364400416034343698204186575808495617 // BN254 scalar field
+            let r := 21888242871839275222246405745257275088548364400416034343698204186575808495617 // BN254 scalar field 
 
             // Initialize success as true
             let success := true
 
             {
-                {%- match self.embedded_vk %}
-                {%- when Some with (embedded_vk) %}
                 // Load vk_digest and num_instances of vk into memory
                 {%- for (name, chunk) in embedded_vk.constants[..2] %}
                 mstore({{ vk_mptr + loop.index0 }}, {{ chunk|hex_padded(64) }}) // {{ name }}
                 {%- endfor %}
-                {%- when None %}
-                // Copy vk_digest and num_instances of vk into memory
-                extcodecopy(vk, VK_MPTR, 0x00, 0x40)
-                {%- endmatch %}
 
                 // Check valid length of proof
                 success := and(success, eq({{ proof_len|hex() }}, calldataload(sub(PROOF_LEN_CPTR, 0x6014F51900))))
@@ -261,6 +252,7 @@ contract Halo2Verifier {
 
                 let proof_cptr := PROOF_CPTR
                 let challenge_mptr := CHALLENGE_MPTR
+
                 {%- for num_advices in num_advices %}
 
                 // Phase {{ loop.index }}
@@ -306,8 +298,6 @@ contract Halo2Verifier {
                 // TODO
                 {%- endmatch %}
 
-                {%~ match self.embedded_vk %}
-                {%- when Some with (embedded_vk) %}
                 // Load full vk into memory
                 {%- for (name, chunk) in embedded_vk.constants %}
                 mstore({{ vk_mptr + loop.index0 }}, {{ chunk|hex_padded(64) }}) // {{ name }}
@@ -322,10 +312,6 @@ contract Halo2Verifier {
                 mstore({{ vk_mptr + offset + 2 * loop.index0 }}, {{ x|hex_padded(64) }}) // permutation_comms[{{ loop.index0 }}].x
                 mstore({{ vk_mptr + offset + 2 * loop.index0 + 1 }}, {{ y|hex_padded(64) }}) // permutation_comms[{{ loop.index0 }}].y
                 {%- endfor %}
-                {%- when None %}
-                // Copy full vk into memory
-                extcodecopy(vk, VK_MPTR, 0x00, {{ vk_len|hex() }})
-                {%- endmatch %}
 
                 // Read accumulator from instances
                 if mload(HAS_ACCUMULATOR_MPTR) {
@@ -403,7 +389,7 @@ contract Halo2Verifier {
                 }
                 let x_n_minus_1 := addmod(x_n, sub(r, 1), r)
                 mstore(mptr_end, x_n_minus_1)
-                success := batch_invert(success, X_N_MPTR, add(mptr_end, 0x20), r)
+                success := batch_invert(success, X_N_MPTR, add(mptr_end, 0x20))
 
                 mptr := X_N_MPTR
                 let l_i_common := mulmod(x_n_minus_1, mload(N_INV_MPTR), r)
@@ -456,7 +442,6 @@ contract Halo2Verifier {
             // Compute quotient evavluation
             {
                 let quotient_eval_numer
-                let delta := 4131629893567559867359510883348571134090853742863529169391034518566172092834
                 let y := mload(Y_MPTR)
 
                 {%- for code_block in quotient_eval_numer_computations %}
@@ -468,7 +453,6 @@ contract Halo2Verifier {
                 {%- endfor %}
 
                 pop(y)
-                pop(delta)
 
                 let quotient_eval := mulmod(quotient_eval_numer, mload(X_N_MINUS_1_INV_MPTR), r)
                 mstore(QUOTIENT_EVAL_MPTR, quotient_eval)

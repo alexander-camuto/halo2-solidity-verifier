@@ -17,14 +17,14 @@ fn main() {
     let vk = keygen_vk(&params[&K_RANGE.start], &StandardPlonk::default()).unwrap();
     let generator = SolidityGenerator::new(&params[&K_RANGE.start], &vk, Bdfg21, 0);
     let (verifier_solidity, _) = generator.render_separately().unwrap();
-    save_solidity("Halo2Verifier.sol", &verifier_solidity);
+    save_solidity("Halo2VerifierReusable.sol", &verifier_solidity);
 
     let verifier_creation_code = compile_solidity(&verifier_solidity);
     let verifier_creation_code_size = verifier_creation_code.len();
     println!("Verifier creation code size: {verifier_creation_code_size}");
 
     let mut evm = Evm::default();
-    let verifier_address = evm.create(verifier_creation_code);
+    let (verifier_address, _) = evm.create(verifier_creation_code);
 
     let deployed_verifier_solidity = verifier_solidity;
 
@@ -36,12 +36,12 @@ fn main() {
         let pk = keygen_pk(&params[&k], vk, &circuit).unwrap();
         let generator = SolidityGenerator::new(&params[&k], pk.get_vk(), Bdfg21, num_instances);
         let (verifier_solidity, vk_solidity) = generator.render_separately().unwrap();
-        save_solidity(format!("Halo2VerifyingKey-{k}.sol"), &vk_solidity);
+        save_solidity(format!("Halo2VerifyingArtifact-{k}.sol"), &vk_solidity);
 
         assert_eq!(deployed_verifier_solidity, verifier_solidity);
 
         let vk_creation_code = compile_solidity(&vk_solidity);
-        let vk_address = evm.create(vk_creation_code);
+        let (vk_address, _) = evm.create(vk_creation_code);
 
         let calldata = {
             let instances = circuit.instances();

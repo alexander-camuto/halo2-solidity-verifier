@@ -50,8 +50,11 @@ pub fn encode_calldata(
 pub(crate) mod test {
     pub use revm;
     use revm::{
-        primitives::{Address, CreateScheme, ExecutionResult, Output, TransactTo, TxEnv},
-        InMemoryDB, EVM,
+        primitives::{
+            Address, Bytes, CfgEnv, CfgEnvWithHandlerCfg, ExecutionResult, HaltReason, Output,
+            TransactTo, TxEnv,
+        },
+        Evm as EVM, InMemoryDB,
     };
     use std::{
         fmt::{self, Debug, Formatter},
@@ -71,6 +74,8 @@ pub(crate) mod test {
             .stderr(Stdio::piped())
             .arg("--bin")
             .arg("--optimize")
+            .arg("--model-checker-targets")
+            .arg("underflow,overflow")
             .arg("-")
             .spawn()
         {
@@ -79,7 +84,7 @@ pub(crate) mod test {
                 panic!("Command 'solc' not found");
             }
             Err(err) => {
-                panic!("Failed to spwan process with command 'solc':\n{err}");
+                panic!("Failed to spawn process with command 'solc':\n{err}");
             }
         };
         process
@@ -106,38 +111,30 @@ pub(crate) mod test {
     }
 
     /// Evm runner.
-    pub struct Evm {
-        evm: EVM<InMemoryDB>,
+    pub struct Evm<'a> {
+        evm: EVM<'a, (), InMemoryDB>,
     }
 
-    impl Debug for Evm {
+    impl Debug for Evm<'_> {
         fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-            let mut debug_struct = f.debug_struct("Evm");
-            debug_struct
-                .field("env", &self.evm.env)
-                .field("db", &self.evm.db.as_ref().unwrap())
-                .finish()
+            self.evm.fmt(f)
         }
     }
 
-    impl Default for Evm {
+    impl Default for Evm<'_> {
         fn default() -> Self {
-            Self {
-                evm: EVM {
-                    env: Default::default(),
-                    db: Some(Default::default()),
-                },
-            }
+            let evm = EVM::builder().with_db(InMemoryDB::default()).build();
+            Self { evm }
         }
     }
 
-    impl Evm {
+    impl Evm<'_> {
         /// Return code_size of given address.
         ///
         /// # Panics
         /// Panics if given address doesn't have bytecode.
         pub fn code_size(&mut self, address: Address) -> usize {
-            self.evm.db.as_ref().unwrap().accounts[&address]
+            self.evm.db().accounts[&address]
                 .info
                 .code
                 .as_ref()
@@ -145,20 +142,34 @@ pub(crate) mod test {
                 .len()
         }
 
+        /// Return a version of the evm that allows for unlimited deployments sizes.
+        pub fn unlimited() -> Self {
+            let mut cfg_env: CfgEnv = Default::default();
+            cfg_env.limit_contract_code_size = Some(usize::MAX);
+            let evm = EVM::builder()
+                .with_db(InMemoryDB::default())
+                .with_cfg_env_with_handler_cfg(CfgEnvWithHandlerCfg {
+                    cfg_env,
+                    handler_cfg: Default::default(),
+                })
+                .build();
+            Self { evm }
+        }
+
         /// Apply create transaction with given `bytecode` as creation bytecode.
         /// Return created `address`.
         ///
         /// # Panics
         /// Panics if execution reverts or halts unexpectedly.
-        pub fn create(&mut self, bytecode: Vec<u8>) -> Address {
-            let (_, output) = self.transact_success_or_panic(TxEnv {
+        pub fn create(&mut self, bytecode: Vec<u8>) -> (Address, u64) {
+            let (gas_used, output) = self.transact_success_or_panic(TxEnv {
                 gas_limit: u64::MAX,
-                transact_to: TransactTo::Create(CreateScheme::Create),
+                transact_to: TransactTo::Create,
                 data: bytecode.into(),
                 ..Default::default()
             });
             match output {
-                Output::Create(_, Some(address)) => address,
+                Output::Create(_, Some(address)) => (address, gas_used),
                 _ => unreachable!(),
             }
         }
@@ -181,10 +192,24 @@ pub(crate) mod test {
             }
         }
 
+        /// Apply call transaction to given `address` with `calldata` with the expectation of failure.
+        /// Returns `gas_used` and `return_data`.
+        ///
+        /// # Panics
+        /// Panics if execution succeeds.
+        pub fn call_fail(&mut self, address: Address, calldata: Vec<u8>) {
+            let (_, _) = self.transact_failure_or_panic(TxEnv {
+                gas_limit: u64::MAX,
+                transact_to: TransactTo::Call(address),
+                data: calldata.into(),
+                ..Default::default()
+            });
+        }
+
         fn transact_success_or_panic(&mut self, tx: TxEnv) -> (u64, Output) {
-            self.evm.env.tx = tx;
+            self.evm.context.evm.env.tx = tx;
             let result = self.evm.transact_commit().unwrap();
-            self.evm.env.tx = Default::default();
+            self.evm.context.evm.env.tx = Default::default();
             match result {
                 ExecutionResult::Success {
                     gas_used,
@@ -196,7 +221,7 @@ pub(crate) mod test {
                         println!("--- logs from {} ---", logs[0].address);
                         for (log_idx, log) in logs.iter().enumerate() {
                             println!("log#{log_idx}");
-                            for (topic_idx, topic) in log.topics.iter().enumerate() {
+                            for (topic_idx, topic) in log.topics().iter().enumerate() {
                                 println!("  topic{topic_idx}: {topic:?}");
                             }
                         }
@@ -210,6 +235,42 @@ pub(crate) mod test {
                 ExecutionResult::Halt { reason, gas_used } => panic!(
                     "Transaction halts unexpectedly with gas_used {gas_used} and reason {reason:?}"
                 ),
+            }
+        }
+
+        fn transact_failure_or_panic(&mut self, tx: TxEnv) -> (u64, Result<Bytes, HaltReason>) {
+            self.evm.context.evm.env.tx = tx;
+            let result = self.evm.transact_commit().unwrap();
+            self.evm.context.evm.env.tx = Default::default();
+            match result {
+                ExecutionResult::Success {
+                    gas_used,
+                    output,
+                    logs,
+                    ..
+                } => {
+                    if !logs.is_empty() {
+                        println!("--- logs from {} ---", logs[0].address);
+                        for (log_idx, log) in logs.iter().enumerate() {
+                            println!("log#{log_idx}");
+                            for (topic_idx, topic) in log.topics().iter().enumerate() {
+                                println!("  topic{topic_idx}: {topic:?}");
+                            }
+                        }
+                        println!("--- end ---");
+                    }
+                    panic!("Transaction succeeds unexpectedly with gas_used {gas_used} and output {output:?}")
+                }
+                ExecutionResult::Revert { gas_used, output } => {
+                    println!("Transaction reverts with gas_used {gas_used} and output {output:#x}");
+                    (gas_used, Ok(output))
+                }
+                ExecutionResult::Halt { reason, gas_used } => {
+                    println!(
+                        "Transaction halts unexpectedly with gas_used {gas_used} and reason {reason:?}"
+                    );
+                    (gas_used, Err(reason))
+                }
             }
         }
     }
