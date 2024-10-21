@@ -69,3 +69,8 @@ The template is heavily inspired by Aztec's [`BaseUltraVerifier.sol`](https://gi
 ## Lookup Modularity 
 
 Note that we have extended the verifier to include the ability to verify mvlookup / logup lookups. This is hidden behind the `mvlookup` feature flag.
+
+## Reusability
+
+For the reusable verifier, we recommend reading the ReusableVerifier.md for a more detailed explanation of the design rationale and technical details.
+
