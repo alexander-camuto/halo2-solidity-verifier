@@ -46,6 +46,17 @@ pub fn encode_calldata(
     .collect()
 }
 
+/// Encode VKA deployment calldata to invoke `Halo2Reusable.deployVKA`.
+pub fn encode_deploy(vk_creation_code: &[u8]) -> Vec<u8> {
+    chain![
+        [0xde, 0x8f, 0x56, 0x58], // function signature "deployVKA(bytes)"
+        to_u256_be_bytes(0x20),   // offset of vka bytecode
+        to_u256_be_bytes(vk_creation_code.len()), // length of vka bytecode
+        vk_creation_code.iter().cloned()
+    ]
+    .collect()
+}
+
 #[cfg(any(test, feature = "evm"))]
 pub(crate) mod test {
     pub use revm;

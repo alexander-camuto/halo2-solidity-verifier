@@ -1,13 +1,13 @@
 use crate::{
-    codegen::{
-        util::to_u256_be_bytes, AccumulatorEncoding, BatchOpenScheme::Bdfg21, SolidityGenerator,
-    },
+    codegen::{AccumulatorEncoding, BatchOpenScheme::Bdfg21, SolidityGenerator},
     encode_calldata,
-    evm::test::{compile_solidity, Evm},
+    evm::{
+        encode_deploy,
+        test::{compile_solidity, Evm},
+    },
     FN_SIG_VERIFY_PROOF, FN_SIG_VERIFY_PROOF_WITH_VK_ADDRESS,
 };
 use halo2_proofs::halo2curves::bn256::{Bn256, Fr};
-use itertools::chain;
 use rand::Rng;
 use rand::{rngs::StdRng, RngCore, SeedableRng};
 use revm::primitives::Address;
@@ -117,14 +117,7 @@ fn run_render_separately<C: halo2::TestCircuit<Fr>>() {
         // replace the creation call here with a evm.call to the deployVKA command on the
         // reusable verifier
 
-        let encoded_calldata = chain![
-            [0xde, 0x8f, 0x56, 0x58], // function signature "deployVKA(bytes)"
-            to_u256_be_bytes(0x20),   // offset of vka bytecode
-            to_u256_be_bytes(vk_creation_code_size), // length of vka bytecode
-            vk_creation_code.iter().cloned()
-        ]
-        .collect();
-        let (_gas_cost, output) = evm.call(verifier_address, encoded_calldata);
+        let (_gas_cost, output) = evm.call(verifier_address, encode_deploy(&vk_creation_code));
 
         let word: [u8; 32] = output.try_into().unwrap();
         let vk_address: [u8; 20] = word[12..32].try_into().unwrap();
