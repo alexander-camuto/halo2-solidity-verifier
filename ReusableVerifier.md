@@ -90,11 +90,11 @@ As mentioned previously, the VK artifact extends the VK. The sections labeled in
 
 ### `Halo2VerifyingKey.sol` :
 
-![image.png](https://prod-files-secure.s3.us-west-2.amazonaws.com/f9535faf-4480-4499-9059-a48ba240eaa9/70d11814-eb8d-4174-ae09-840d8130e6ab/image.png)
+![image.png](./images/verifyingkey.png)
 
 ### `Halo2VerifyingArtifact.sol` :
 
-![image.png](https://prod-files-secure.s3.us-west-2.amazonaws.com/f9535faf-4480-4499-9059-a48ba240eaa9/4533bbc3-e242-4fc5-9cf2-eb0be32294bb/image.png)
+![image.png](./images/verifyingartifact.png)
 
 Here is a brief description of each section:
 
@@ -145,7 +145,7 @@ Here is a brief description of each section:
     ```
     
 3. **Challenge Data:** Here we encode the `num_advices` and `num_challenges` needed in reading the instances, witness commitments and [generating challenges](https://hackmd.io/@axiom/SJw3p-qX3#Multi-phase-challenges). On the rust side of things we represent this data as a `Vec<(usize, usize)>` type. In the interest of keeping `Halo2VerifyingArtifact.sol` compact and storage efficient, we pack as many of these tuple elements into `U256` size words (In the EVM, all memory storage slots take up 256 bits of space). 
-4. **Gate Data:** The data here consists entirely of encoded expressions that compose the polynomial constraints of each of the gates in the circuit. As mentioned previously in the [const expressions](https://www.notion.so/EZKL-is-5x-cheaper-to-deploy-with-new-reusable-verifier-47b99f69c1184ddea96a9fac16f19661?pvs=21) section, the original compiler translated these mathematical expressions into a format that can be executed in the EVM stack. Here is how they are encoded in memory:
+4. **Gate Data:** The data here consists entirely of encoded expressions that compose the polynomial constraints of each of the gates in the circuit. As mentioned previously, the original compiler translated these mathematical expressions into a format that can be executed in the EVM stack. Here is how they are encoded in memory:
     1. The first slot in the space stores the total number of gates that need to be evaluated
     2. Next we allocate a new area in memory that encodes a series of intermediate operations generated from recursively evaluating a gate `Expression<F>` based on its type. The reusable verifier categorizes these operations into 4 different types:
         1. Advice/Fixed expression
@@ -199,11 +199,11 @@ Here is a brief description of each section:
         
     3. The first byte stores the operation type followed by 2 bytes of pointer data for each operand. The reusable verifier utilizes bitmasks and switch statements to decode these values and execute the appropriate operation, storing the result in the next available free static memory address. 
         
-        ![Encoding of the `operation` that make up the `expression: Vec<opertaion>` type](https://prod-files-secure.s3.us-west-2.amazonaws.com/f9535faf-4480-4499-9059-a48ba240eaa9/83b8a584-7269-47c2-a8e1-3741105d9048/image.png)
-        
+        ![Encoding of the `operation` that make up the `expression: Vec<operation>` type](./images/operationencoding.png)
+
         Encoding of the `operation` that make up the `expression: Vec<opertaion>` type
         
-        ![N ⇒ outer length of the `gate_data : Vec<expression>` type. L[i] ⇒ memory allocation for the i’th `expression`.  E ⇒ $0x20*∑_{i=0}^{N}L_i$](https://prod-files-secure.s3.us-west-2.amazonaws.com/f9535faf-4480-4499-9059-a48ba240eaa9/fb1f7f68-5575-4bcb-b946-3d7738276373/image.png)
+        ![N ⇒ outer length of the `gate_data : Vec<expression>` type. L[i] ⇒ memory allocation for the i’th `expression`.  E ⇒ $0x20*∑_{i=0}^{N}L_i$](./images/gatedataencoding.png)
         
         N ⇒ outer length of the `gate_data : Vec<expression>` type. L[i] ⇒ memory allocation for the i’th `expression`.  E ⇒ $0x20*∑_{i=0}^{N}L_i$
         
@@ -219,12 +219,11 @@ Here is a brief description of each section:
         1. `column query` consists of a byte flag for the memory location of the query ptr (0 for advice/fixed ⇒ `calldata` and 1 for instance ⇒ `memory`) followed by the query ptr itself. 
         2. Bytes 4 and 5 encode the `permutation_eval` ptr. 
         
-        ![image.png](https://prod-files-secure.s3.us-west-2.amazonaws.com/f9535faf-4480-4499-9059-a48ba240eaa9/c8b1475a-e4d9-4451-9e89-7280e3a9370d/image.png)
-        
+        ![image.png](./images/columnevalsencoding.png)
     2. The `permutation_z_eval` is represented as a triplet tuple of pointers: `(ptr, ptr, ptr)`  and it’s encoded in the 6 LSG bytes of the first word of each section in memory mapped to the `permutation_data` vector, followed by the `column_evals: Vec<bytes5>` taking up the remaining bit space in the word, allocating new words if we need more space. 
     
     ![The first word encodes metadata about the memory layout. 
-    L ⇒ the last index of the permutation_data. N ⇒ Number words all but the last permutation_data point takes up. N’ ⇒ Number of words the last set of permutation_data takes up.](https://prod-files-secure.s3.us-west-2.amazonaws.com/f9535faf-4480-4499-9059-a48ba240eaa9/1fe07934-1517-46ba-97c7-94fdd0679197/image.png)
+    L ⇒ the last index of the permutation_data. N ⇒ Number words all but the last permutation_data point takes up. N’ ⇒ Number of words the last set of permutation_data takes up.](./images/encodingsummary.png)
     
     The first word encodes metadata about the memory layout. 
     L ⇒ the last index of the permutation_data. N ⇒ Number words all but the last permutation_data point takes up. N’ ⇒ Number of words the last set of permutation_data takes up.
@@ -252,11 +251,11 @@ Here is a brief description of each section:
         
         </aside>
         
-    2. If `new_table == true` , then we allocate a new area in memory for the `lookup_table_line: Vec<U256>` and `lookup_table_inputs: U256` . The encoding pattern for the `lookup_table_lines` words is the same as the packed `Expression` encoding used in the [Gate Data](https://www.notion.so/EZKL-is-5x-cheaper-to-deploy-with-new-reusable-verifier-47b99f69c1184ddea96a9fac16f19661?pvs=21) section, whereby the first LSG byte of the first word contains the number of words allocated for the expression data, followed by the `Vec<operations>` . Lastly the `lookup_table_lines` stores the set of result `mptrs` stored into static memory during the previous expression evaluations step of the `lookup_table_line` .
+    2. If `new_table == true` , then we allocate a new area in memory for the `lookup_table_line: Vec<U256>` and `lookup_table_inputs: U256` . The encoding pattern for the `lookup_table_lines` words is the same as the packed `Expression` encoding used in the gate data section, whereby the first LSG byte of the first word contains the number of words allocated for the expression data, followed by the `Vec<operations>` . Lastly the `lookup_table_lines` stores the set of result `mptrs` stored into static memory during the previous expression evaluations step of the `lookup_table_line` .
     3. If `new_table == false` , we skip the `lookup_table_line` and `lookup_table_input` sections (since we will be reusing the previous table evaluation) and jump straight to encoding the `inputs`.
     4. Here each element of the `inputs: Vec<(input_expressions: Vec<U256>, input_vars: U256)>` vector follows the same encoding pattern as the `lookup_table_line` and `lookup_table_input` section that came before it with the exception of the first element; the first 2 LSG bytes store the length of the inputs scaled by `0x20` , denoted as `M` in the figure below. 
         
-        ![All of the `I` indicate the indices where the the previous `look_table_inputs` doesn’t equal the current and `J` is the compliment to it.  ](https://prod-files-secure.s3.us-west-2.amazonaws.com/f9535faf-4480-4499-9059-a48ba240eaa9/1d62cd9e-8906-4d1a-a1eb-4c6ed8593dd2/image.png)
+        ![All of the `I` indicate the indices where the the previous `look_table_inputs` doesn’t equal the current and `J` is the compliment to it.  ](./images/lookupdataencoding.png)
         
         All of the `I` indicate the indices where the the previous `look_table_inputs` doesn’t equal the current and `J` is the compliment to it.  
         
@@ -290,7 +289,7 @@ Here is a brief description of each section:
     }
     ```
     
-    ![Memory layout of the `point_computations`](https://prod-files-secure.s3.us-west-2.amazonaws.com/f9535faf-4480-4499-9059-a48ba240eaa9/765b084f-179f-4261-9ae9-e5aad3989a5a/image.png)
+    ![Memory layout of the `point_computations`](./images/pointcompmemlayout.png)
     
     Memory layout of the `point_computations`
     
