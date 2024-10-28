@@ -11,13 +11,74 @@ contract Halo2VerifierReusable {
     uint256 internal constant    PTR_BITMASK = 0xFFFF;
     uint256 internal constant    BYTE_FLAG_BITMASK = 0xFF;
 
+    /// @dev Mapping that checks if a given vka has been deployed
+    mapping(address => bool) public vkaLog;
+
+    event DeployedVKArtifact(address vka);
+
+     /**
+     * @dev The passed vka address has not been deployed through this contract. 
+     */
+    error UnloggedVka(address vka);
+
+    // 1. Pre compute the address of the VKA to be deployed
+    /// @param bytecode The bytecode of the VKA to deploy. 
+    /// @dev You can use the returned address to determine
+    /// if a given VKA has already been deployed. 
+    function precomputeAddress(
+        bytes memory bytecode
+    ) public view returns (address) {
+        bytes32 hash = keccak256(
+            abi.encodePacked(
+                bytes1(0xff),
+                address(this),
+                uint(0),
+                keccak256(bytecode)
+            )
+        );
+
+        return address(uint160(uint(hash)));
+    }
+
+    // 2. Deploy the distinct VKA using create2
+    /// @param bytecode The bytecode of the VKA to deploy
+    function deployVKA(
+        bytes memory bytecode
+    ) public returns (address addr) {
+        assembly {
+            addr := create2(
+                0x0, // value, hardcode to 0
+                add(bytecode, 0x20),
+                mload(bytecode),
+                0x0 // salt, hardcode to 0
+            )
+            if iszero(extcodesize(addr)) {
+                revert(0, 0)
+            }
+        }
+        vkaLog[addr] = true;
+        emit DeployedVKArtifact(addr);
+    }
+
+
+    /**
+     * @dev Transfers ownership of the contract to a new account (`newOwner`).
+     * Internal function without access restriction.
+    */
+
+    modifier checkVkaLog(address addr) {
+        if (!vkaLog[addr]) {
+            revert UnloggedVka(addr);
+        }   
+        _;
+    }
 
 
     function verifyProof(
         address vk,
         bytes calldata proof,
         uint256[] calldata instances
-    ) public returns (bool) {
+    ) public checkVkaLog(vk) returns (bool) {
         assembly {
             // Read EC point (x, y) at (proof_cptr, proof_cptr + 0x20),
             // and check if the point is on affine plane,

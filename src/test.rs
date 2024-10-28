@@ -1,7 +1,10 @@
 use crate::{
     codegen::{AccumulatorEncoding, BatchOpenScheme::Bdfg21, SolidityGenerator},
     encode_calldata,
-    evm::test::{compile_solidity, Evm},
+    evm::{
+        encode_deploy,
+        test::{compile_solidity, Evm},
+    },
     FN_SIG_VERIFY_PROOF, FN_SIG_VERIFY_PROOF_WITH_VK_ADDRESS,
 };
 use halo2_proofs::halo2curves::bn256::{Bn256, Fr};
@@ -111,14 +114,22 @@ fn run_render_separately<C: halo2::TestCircuit<Fr>>() {
         let vk_creation_code = compile_solidity(&vk_solidity);
         let vk_creation_code_size = vk_creation_code.len();
         println!("VK creation code size: {vk_creation_code_size}");
-        let (vk_address, gas_cost) = evm.create(vk_creation_code);
-        let vk_runtime_code_size = evm.code_size(vk_address);
+        // replace the creation call here with a evm.call to the deployVKA command on the
+        // reusable verifier
+
+        let (_gas_cost, output) = evm.call(verifier_address, encode_deploy(&vk_creation_code));
+
+        let word: [u8; 32] = output.try_into().unwrap();
+        let vk_address: [u8; 20] = word[12..32].try_into().unwrap();
+
+        // let (vk_address, gas_cost) = evm.create(vk_creation_code);
+        let vk_runtime_code_size = evm.code_size(vk_address.into());
         println!("VK runtime code size: {vk_runtime_code_size}");
-        println!("Gas deployment cost VK: {gas_cost}");
+        // println!("Gas deployment cost VK: {gas_cost}");
 
         let (gas_cost, output) = evm.call(
             verifier_address,
-            encode_calldata(Some(vk_address.into()), &proof, &instances),
+            encode_calldata(Some(vk_address), &proof, &instances),
         );
         assert_eq!(output, [vec![0; 31], vec![1]].concat());
         println!("Gas cost separate: {gas_cost}");
