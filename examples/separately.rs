@@ -3,8 +3,8 @@ use prelude::*;
 
 use halo2_proofs::poly::commitment::Params;
 use halo2_solidity_verifier::{
-    compile_solidity, encode_calldata, BatchOpenScheme::Bdfg21, Evm, Keccak256Transcript,
-    SolidityGenerator,
+    compile_solidity, encode_calldata, encode_deploy, BatchOpenScheme::Bdfg21, Evm,
+    Keccak256Transcript, SolidityGenerator,
 };
 
 const K_RANGE: Range<u32> = 10..17;
@@ -41,12 +41,15 @@ fn main() {
         assert_eq!(deployed_verifier_solidity, verifier_solidity);
 
         let vk_creation_code = compile_solidity(&vk_solidity);
-        let (vk_address, _) = evm.create(vk_creation_code);
+        let (_gas_cost, output) = evm.call(verifier_address, encode_deploy(&vk_creation_code));
+
+        let word: [u8; 32] = output.try_into().unwrap();
+        let vk_address: [u8; 20] = word[12..32].try_into().unwrap();
 
         let calldata = {
             let instances = circuit.instances();
             let proof = create_proof_checked(&params[&k], &pk, circuit, &instances, &mut rng);
-            encode_calldata(Some(vk_address.into()), &proof, &instances)
+            encode_calldata(Some(vk_address), &proof, &instances)
         };
         let (gas_cost, output) = evm.call(verifier_address, calldata);
         assert_eq!(output, [vec![0; 31], vec![1]].concat());
