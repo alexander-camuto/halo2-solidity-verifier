@@ -202,7 +202,6 @@ impl<'a> SolidityGenerator<'a> {
             ("vk_digest", U256::from(0)),
             ("vk_mptr", U256::from(0)),
             ("vk_len", U256::from(0)),
-            ("instance_cptr", U256::from(0)),
             ("num_instances", U256::from(0)),
             ("num_evals", U256::from(0)),
             ("challenges_offset", U256::from(0)),
@@ -498,7 +497,6 @@ impl<'a> SolidityGenerator<'a> {
         // Update constants
         let first_quotient_x_cptr = dummy_data.quotient_comm_cptr;
         let last_quotient_x_cptr = first_quotient_x_cptr + 2 * (self.meta.num_quotients - 1);
-        let instance_cptr = U256::from(self.meta.proof_len(self.scheme) + 0xa4);
         let gate_computations_len_offset = dummy_vk.len(true) + (const_expressions.len() * 0x20);
         let permutations_computations_len_offset =
             gate_computations_len_offset + (0x20 * gate_computations_dummy.len());
@@ -513,7 +511,6 @@ impl<'a> SolidityGenerator<'a> {
             U256::from(fsm_challenges),
         );
 
-        set_constant_value(&mut dummy_vk.constants, "instance_cptr", instance_cptr);
         set_constant_value(
             &mut dummy_vk.constants,
             "first_quotient_x_cptr",
@@ -610,8 +607,6 @@ impl<'a> SolidityGenerator<'a> {
     fn generate_verifier(&self) -> Halo2Verifier {
         let proof_cptr = Ptr::calldata(0x64);
 
-        let proof_len_cptr = Ptr::calldata(0x6014F51944);
-
         let vk = self.generate_vk(false);
         let vk_m = self.estimate_static_working_memory_size(&VerifyingCache::Key(&vk), proof_cptr);
         let vk_mptr = Ptr::memory(vk_m);
@@ -651,8 +646,6 @@ impl<'a> SolidityGenerator<'a> {
             num_challenges: self.meta.num_challenges(),
             num_evals: self.meta.num_evals,
             num_quotients: self.meta.num_quotients,
-            proof_cptr,
-            proof_len_cptr,
             quotient_comm_cptr: data.quotient_comm_cptr,
             proof_len: self.meta.proof_len(self.scheme),
             challenge_mptr: data.challenge_mptr,

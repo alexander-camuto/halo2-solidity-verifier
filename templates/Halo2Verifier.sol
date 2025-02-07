@@ -5,10 +5,6 @@ pragma solidity ^0.8.0;
 contract Halo2Verifier {
     uint256 internal constant    DELTA = 4131629893567559867359510883348571134090853742863529169391034518566172092834;
     uint256 internal constant        R = 21888242871839275222246405745257275088548364400416034343698204186575808495617; 
-    uint256 internal constant    PROOF_LEN_CPTR = {{ proof_len_cptr }};
-    uint256 internal constant        PROOF_CPTR = {{ proof_cptr }};
-    uint256 internal constant NUM_INSTANCE_CPTR = {{ proof_cptr + (proof_len / 32) }};
-    uint256 internal constant     INSTANCE_CPTR = {{ proof_cptr + (proof_len / 32) + 1 }};
 
     uint256 internal constant FIRST_QUOTIENT_X_CPTR = {{ quotient_comm_cptr }};
     uint256 internal constant  LAST_QUOTIENT_X_CPTR = {{ quotient_comm_cptr + 2 * (num_quotients - 1) }};
@@ -226,18 +222,18 @@ contract Halo2Verifier {
                 {%- endfor %}
 
                 // Check valid length of proof
-                success := and(success, eq({{ proof_len|hex() }}, calldataload(sub(PROOF_LEN_CPTR, 0x6014F51900))))
+                success := and(success, eq({{ proof_len|hex() }}, proof.length))
 
                 // Check valid length of instances
                 let num_instances := mload(NUM_INSTANCES_MPTR)
-                success := and(success, eq(num_instances, calldataload(NUM_INSTANCE_CPTR)))
+                success := and(success, eq(num_instances, instances.length))
 
                 // Absorb vk diegst
                 mstore(0x00, mload(VK_DIGEST_MPTR))
 
                 // Read instances and witness commitments and generate challenges
                 let hash_mptr := 0x20
-                let instance_cptr := INSTANCE_CPTR
+                let instance_cptr := instances.offset
                 for
                     { let instance_cptr_end := add(instance_cptr, mul(0x20, num_instances)) }
                     lt(instance_cptr, instance_cptr_end)
@@ -250,7 +246,7 @@ contract Halo2Verifier {
                     hash_mptr := add(hash_mptr, 0x20)
                 }
 
-                let proof_cptr := PROOF_CPTR
+                let proof_cptr := proof.offset
                 let challenge_mptr := CHALLENGE_MPTR
 
                 {%- for num_advices in num_advices %}
@@ -318,7 +314,7 @@ contract Halo2Verifier {
                     let num_limbs := mload(NUM_ACC_LIMBS_MPTR)
                     let num_limb_bits := mload(NUM_ACC_LIMB_BITS_MPTR)
 
-                    let cptr := add(INSTANCE_CPTR, mul(mload(ACC_OFFSET_MPTR), 0x20))
+                    let cptr := add(instances.offset, mul(mload(ACC_OFFSET_MPTR), 0x20))
                     let lhs_y_off := mul(num_limbs, 0x20)
                     let rhs_x_off := mul(lhs_y_off, 2)
                     let rhs_y_off := mul(lhs_y_off, 3)
@@ -415,7 +411,7 @@ contract Halo2Verifier {
                 let instance_eval := 0
                 for
                     {
-                        let instance_cptr := INSTANCE_CPTR
+                        let instance_cptr := instances.offset
                         let instance_cptr_end := add(instance_cptr, mul(0x20, mload(NUM_INSTANCES_MPTR)))
                     }
                     lt(instance_cptr, instance_cptr_end)
