@@ -9,6 +9,9 @@ pub const FN_SIG_VERIFY_PROOF: [u8; 4] = [0x1e, 0x8e, 0x1e, 0x13];
 /// Function signature of `verifyProof(address,bytes,uint256[])`.
 pub const FN_SIG_VERIFY_PROOF_WITH_VK_ADDRESS: [u8; 4] = [0xaf, 0x83, 0xa1, 0x8d];
 
+/// Function signature of verifyWithDataAttestation(address,bytes) 0x4c7985d0
+pub const FN_SIG_VERIFY_WITH_DATA_ATTESTATION: [u8; 4] = [0x4c, 0x79, 0x85, 0xd0];
+
 /// Encode proof into calldata to invoke `Halo2Verifier.verifyProof`.
 ///
 /// For `vk_address`:
@@ -43,6 +46,73 @@ pub fn encode_calldata(
         to_u256_be_bytes(num_instances),                             // length of instances
         instances.iter().map(fr_to_u256).flat_map(to_u256_be_bytes), // instances
     ]
+    .collect()
+}
+
+/// Malicious encoding of proof into calldata to invoke `Halo2Verifier.verifyProof`.
+///
+/// For `vk_address`:
+/// - Pass `None` if verifying key is embedded in `Halo2Verifier`
+/// - Pass `Some(vk_address)` if verifying key is separated and deployed at `vk_address`
+pub fn encode_calldata_malicious(
+    vk_address: Option<[u8; 20]>,
+    proof: &[u8],
+    instances: &[bn256::Fr],
+) -> Vec<u8> {
+    let (fn_sig, offset) = if vk_address.is_some() {
+        (FN_SIG_VERIFY_PROOF_WITH_VK_ADDRESS, 0x60)
+    } else {
+        (FN_SIG_VERIFY_PROOF, 0x40)
+    };
+    let vk_address = if let Some(vk_address) = vk_address {
+        U256::try_from_be_slice(&vk_address)
+            .unwrap()
+            .to_be_bytes::<0x20>()
+            .to_vec()
+    } else {
+        Vec::new()
+    };
+    let num_instances = instances.len();
+    let proof_len = proof.len();
+    let reverse_instances = instances.iter().rev().cloned().collect::<Vec<_>>();
+    let malicious_instances_offset = offset + 0x40 + proof_len + (num_instances * 0x20);
+    let instances_offset = offset + 0x20 + proof_len;
+    println!("malicious_instances_offset: {malicious_instances_offset}");
+    println!("instances_offset: {instances_offset}");
+    println!("proof.len(): {proof_len}");
+    println!("instances.len(): {num_instances}");
+    chain![
+        fn_sig,                                                      // function signature
+        vk_address,                                                  // verifying key address
+        to_u256_be_bytes(offset),                                    // offset of proof
+        to_u256_be_bytes(malicious_instances_offset),                // offset of instances
+        to_u256_be_bytes(proof_len),                                 // length of proof
+        proof.iter().cloned(),                                       // proof
+        to_u256_be_bytes(num_instances),                             // length of instances
+        instances.iter().map(fr_to_u256).flat_map(to_u256_be_bytes), // instances
+        to_u256_be_bytes(num_instances),                             // length of malicous instances
+        reverse_instances
+            .iter()
+            .map(fr_to_u256)
+            .flat_map(to_u256_be_bytes), // malicous instances
+    ]
+    .collect()
+}
+
+/// Malicious encoding of proof into calldata to invoke `VerifierWrappper.verifyWithDataAttestation`.
+pub fn encode_calldata_malicious_wrapper(
+    verifier_address: [u8; 20],
+    malicious_calldata: Vec<u8>,
+) -> Vec<u8> {
+    chain![
+        FN_SIG_VERIFY_WITH_DATA_ATTESTATION, // function signature
+        U256::try_from_be_slice(&verifier_address)
+            .unwrap()
+            .to_be_bytes::<0x20>(), // verifier_address
+        to_u256_be_bytes(0x40),              // offset of malicious calldata
+        to_u256_be_bytes(malicious_calldata.len()), // length of malicious calldata                // malicious calldata
+    ]
+    .chain(malicious_calldata)
     .collect()
 }
 

@@ -1,7 +1,10 @@
 use crate::{
     codegen::{AccumulatorEncoding, BatchOpenScheme::Bdfg21, SolidityGenerator},
     encode_calldata,
-    evm::test::{compile_solidity, Evm},
+    evm::{
+        encode_calldata_malicious, encode_calldata_malicious_wrapper,
+        test::{compile_solidity, Evm},
+    },
     FN_SIG_VERIFY_PROOF, FN_SIG_VERIFY_PROOF_WITH_VK_ADDRESS,
 };
 use halo2_proofs::halo2curves::bn256::{Bn256, Fr};
@@ -10,6 +13,9 @@ use rand::{rngs::StdRng, RngCore, SeedableRng};
 use revm::primitives::Address;
 use sha3::Digest;
 use std::{fs::File, io::Write};
+
+// verifier_wrapper_solidity string
+const VERIFIER_WRAPPER_SOLIDITY: &str = include_str!("../contracts/VerifierWrapper.sol");
 
 #[test]
 fn function_signature() {
@@ -58,8 +64,12 @@ fn run_render<C: halo2::TestCircuit<Fr>>() {
     let verifier_creation_code = compile_solidity(verifier_solidity);
     let verifier_creation_code_size = verifier_creation_code.len();
 
+    // compile the solidity file located at contracts/VerifierWrapper.sol
+    let verifier_wrapper_creation_code = compile_solidity(VERIFIER_WRAPPER_SOLIDITY);
+
     let mut evm = Evm::unlimited();
     let (verifier_address, gas_cost) = evm.create(verifier_creation_code);
+    let verifier_wrapper_address = evm.create(verifier_wrapper_creation_code).0;
     let verifier_runtime_code_size = evm.code_size(verifier_address);
 
     println!("Verifier creation code size: {verifier_creation_code_size}");
@@ -69,6 +79,14 @@ fn run_render<C: halo2::TestCircuit<Fr>>() {
     let (gas_cost, output) = evm.call(verifier_address, encode_calldata(None, &proof, &instances));
     assert_eq!(output, [vec![0; 31], vec![1]].concat());
     println!("Gas cost conjoined: {gas_cost}");
+    // println!("Instances: {instances:?}");
+    let malicious_call_data = encode_calldata_malicious(None, &proof, &instances);
+    let malicious_call_data_wrapper =
+        encode_calldata_malicious_wrapper(**verifier_address, malicious_call_data.clone());
+    // test malicious proof on verifier direclty
+    evm.call_fail(verifier_address, malicious_call_data.clone());
+    // test on wrapper
+    evm.call_fail(verifier_wrapper_address, malicious_call_data_wrapper);
 
     // Fuzzing tests
     bit_flip_fuzzing_test::<C>(verifier_address, proof, instances, &mut evm);
@@ -85,8 +103,12 @@ fn run_render_separately<C: halo2::TestCircuit<Fr>>() {
     let verifier_creation_code = compile_solidity(&verifier_solidity);
     let verifier_creation_code_size = verifier_creation_code.len();
 
+    // compile the solidity file located at contracts/VerifierWrapper.sol
+    let verifier_wrapper_creation_code = compile_solidity(VERIFIER_WRAPPER_SOLIDITY);
+
     let mut evm = Evm::default();
     let (verifier_address, _gas_cost) = evm.create(verifier_creation_code);
+    let verifier_wrapper_address = evm.create(verifier_wrapper_creation_code).0;
     let verifier_runtime_code_size = evm.code_size(verifier_address);
 
     println!("Verifier creation code size: {verifier_creation_code_size}");
@@ -122,6 +144,13 @@ fn run_render_separately<C: halo2::TestCircuit<Fr>>() {
         );
         assert_eq!(output, [vec![0; 31], vec![1]].concat());
         println!("Gas cost separate: {gas_cost}");
+        let malicious_call_data =
+            encode_calldata_malicious(Some(vk_address.into()), &proof, &instances);
+        // test malicious proof on verifier direclty
+        evm.call_fail(verifier_address, malicious_call_data.clone());
+        // test on wrapper
+        evm.call_fail(verifier_wrapper_address, malicious_call_data);
+
         bit_flip_fuzzing_test::<C>(verifier_address, proof, instances, &mut evm);
     }
 }

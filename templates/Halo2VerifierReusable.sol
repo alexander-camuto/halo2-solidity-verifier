@@ -3,8 +3,7 @@
 pragma solidity ^0.8.0;
 
 contract Halo2VerifierReusable {
-    uint256 internal constant    PROOF_LEN_CPTR = 0x64;
-    uint256 internal constant    PROOF_CPTR = 0x84;
+
     uint256 internal constant    Q = 21888242871839275222246405745257275088696311157297823662689037894645226208583;
     uint256 internal constant    R = 21888242871839275222246405745257275088548364400416034343698204186575808495617; // BN254 scalar field
     uint256 internal constant    DELTA = 4131629893567559867359510883348571134090853742863529169391034518566172092834;
@@ -833,20 +832,20 @@ contract Halo2VerifierReusable {
                 vk_mptr := mload(0x20)
                 let vk_len := mload(0x40)
 
-                let instance_cptr := mload({{ vk_const_offsets["instance_cptr"]|hex() }})
+                let instance_cptr := instances.offset
 
                 // Check valid length of proof
-                success := and(success, eq(sub(instance_cptr, 0xa4), calldataload(PROOF_LEN_CPTR)))
+                success := and(success, eq(sub(instance_cptr, 0xa4), proof.length))
 
                 // Check valid length of instances
                 let num_instances := mload({{ vk_const_offsets["num_instances"]|hex() }})
-                success := and(success, eq(num_instances, calldataload(sub(instance_cptr,0x20))))
+                success := and(success, eq(num_instances, instances.length))
 
 
                 // Read instances and witness commitments and generate challenges
                 let hash_mptr := 0x20
 
-                let proof_cptr := PROOF_CPTR
+                let proof_cptr := proof.offset
                 let challenge_mptr := add(vk_mptr, vk_len) // challenge_mptr is at the end of vk in memory
                 // Set the theta_mptr (vk_mptr + vk_len + challenges_length)
                 theta_mptr := add(challenge_mptr, mload({{ vk_const_offsets["challenges_offset"]|hex() }}))
@@ -927,7 +926,7 @@ contract Halo2VerifierReusable {
                     let num_limbs := mload(add(vk_mptr, {{ vk_const_offsets["num_acc_limbs"]|hex() }}))
                     let num_limb_bits := mload(add(vk_mptr, {{ vk_const_offsets["num_acc_limb_bits"]|hex() }}))
 
-                    let cptr := add(mload(add(vk_mptr, {{ vk_const_offsets["instance_cptr"]|hex() }})), mul(mload(add(vk_mptr, {{ vk_const_offsets["acc_offset"]|hex() }})), 0x20))
+                    let cptr := add(instances.offset, mul(mload(add(vk_mptr, {{ vk_const_offsets["acc_offset"]|hex() }})), 0x20))
                     let lhs_y_off := mul(num_limbs, 0x20)
                     let rhs_x_off := mul(lhs_y_off, 2)
                     let rhs_y_off := mul(lhs_y_off, 3)
@@ -1026,7 +1025,7 @@ contract Halo2VerifierReusable {
                 let instance_eval := 0
                 for
                     {
-                        let instance_cptr := mload(add(vk_mptr, {{ vk_const_offsets["instance_cptr"]|hex() }}))
+                        let instance_cptr := instances.offset
                         let instance_cptr_end := add(instance_cptr, mul(0x20, num_instances))
                     }
                     lt(instance_cptr, instance_cptr_end)
