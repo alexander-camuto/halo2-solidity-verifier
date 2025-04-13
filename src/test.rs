@@ -103,9 +103,6 @@ fn run_render_separately<C: halo2::TestCircuit<Fr>>() {
     let verifier_creation_code = compile_solidity(&verifier_solidity);
     let verifier_creation_code_size = verifier_creation_code.len();
 
-    // compile the solidity file located at contracts/VerifierWrapper.sol
-    let verifier_wrapper_creation_code = compile_solidity(VERIFIER_WRAPPER_SOLIDITY);
-
     let mut evm = Evm::default();
     let (verifier_address, _gas_cost) = evm.create(verifier_creation_code);
     let verifier_runtime_code_size = evm.code_size(verifier_address);

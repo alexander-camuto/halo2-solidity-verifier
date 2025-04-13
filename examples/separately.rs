@@ -26,8 +26,6 @@ fn main() {
     let mut evm = Evm::default();
     let (verifier_address, _) = evm.create(verifier_creation_code);
 
-    let deployed_verifier_solidity = verifier_solidity;
-
     for k in K_RANGE {
         let num_instances = k as usize;
         let circuit = StandardPlonk::rand(num_instances, &mut rng);
@@ -35,7 +33,7 @@ fn main() {
         let vk = keygen_vk(&params[&k], &circuit).unwrap();
         let pk = keygen_pk(&params[&k], vk, &circuit).unwrap();
         let generator = SolidityGenerator::new(&params[&k], pk.get_vk(), Bdfg21, num_instances);
-        let (verifier_solidity, vka_words) = generator.render_separately_vka_words().unwrap();
+        let (_verifier_solidity, vka_words) = generator.render_separately_vka_words().unwrap();
 
         let calldata = {
             let instances = circuit.instances();
