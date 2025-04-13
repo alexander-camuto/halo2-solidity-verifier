@@ -6,8 +6,8 @@ use ruint::aliases::U256;
 /// Function signature of `verifyProof(bytes,uint256[])`.
 pub const FN_SIG_VERIFY_PROOF: [u8; 4] = [0x1e, 0x8e, 0x1e, 0x13];
 
-/// Function signature of `verifyProof(address,bytes,uint256[])`.
-pub const FN_SIG_VERIFY_PROOF_WITH_VK_ADDRESS: [u8; 4] = [0xaf, 0x83, 0xa1, 0x8d];
+/// Function signature of `verifyProof(bytes,uint256[],bytes32[])`.
+pub const FN_SIG_VERIFY_PROOF_WITH_VKA: [u8; 4] = [0x34, 0x09, 0xfc, 0x9f];
 
 /// Function signature of verifyWithDataAttestation(address,bytes) 0x4c7985d0
 pub const FN_SIG_VERIFY_WITH_DATA_ATTESTATION: [u8; 4] = [0x4c, 0x79, 0x85, 0xd0];
@@ -17,34 +17,33 @@ pub const FN_SIG_VERIFY_WITH_DATA_ATTESTATION: [u8; 4] = [0x4c, 0x79, 0x85, 0xd0
 /// For `vk_address`:
 /// - Pass `None` if verifying key is embedded in `Halo2Verifier`
 /// - Pass `Some(vk_address)` if verifying key is separated and deployed at `vk_address`
-pub fn encode_calldata(
-    vk_address: Option<[u8; 20]>,
-    proof: &[u8],
-    instances: &[bn256::Fr],
-) -> Vec<u8> {
-    let (fn_sig, offset) = if vk_address.is_some() {
-        (FN_SIG_VERIFY_PROOF_WITH_VK_ADDRESS, 0x60)
+pub fn encode_calldata(vka: Option<&[[u8; 32]]>, proof: &[u8], instances: &[bn256::Fr]) -> Vec<u8> {
+    let (fn_sig, offset) = if vka.is_some() {
+        (FN_SIG_VERIFY_PROOF_WITH_VKA, 0x60)
     } else {
         (FN_SIG_VERIFY_PROOF, 0x40)
     };
-    let vk_address = if let Some(vk_address) = vk_address {
-        U256::try_from_be_slice(&vk_address)
-            .unwrap()
-            .to_be_bytes::<0x20>()
-            .to_vec()
-    } else {
-        Vec::new()
-    };
     let num_instances = instances.len();
+    let (vka_offset, vka_data) = if let Some(vka) = vka {
+        (
+            to_u256_be_bytes(offset + 0x40 + proof.len() + (num_instances * 0x20)).to_vec(),
+            vka.to_vec(),
+        )
+    } else {
+        (Vec::new(), Vec::new())
+    };
+    let num_vka_words = vka_data.len();
     chain![
         fn_sig,                                                      // function signature
-        vk_address,                                                  // verifying key address
         to_u256_be_bytes(offset),                                    // offset of proof
         to_u256_be_bytes(offset + 0x20 + proof.len()),               // offset of instances
+        vka_offset,                                                  // offset of vka
         to_u256_be_bytes(proof.len()),                               // length of proof
         proof.iter().cloned(),                                       // proof
         to_u256_be_bytes(num_instances),                             // length of instances
         instances.iter().map(fr_to_u256).flat_map(to_u256_be_bytes), // instances
+        to_u256_be_bytes(num_vka_words),                             // vka length
+        vka_data.iter().flat_map(|arr| arr.iter().cloned())          // vka words
     ]
     .collect()
 }
@@ -60,7 +59,7 @@ pub fn encode_calldata_malicious(
     instances: &[bn256::Fr],
 ) -> Vec<u8> {
     let (fn_sig, offset) = if vk_address.is_some() {
-        (FN_SIG_VERIFY_PROOF_WITH_VK_ADDRESS, 0x60)
+        (FN_SIG_VERIFY_PROOF_WITH_VKA, 0x60)
     } else {
         (FN_SIG_VERIFY_PROOF, 0x40)
     };

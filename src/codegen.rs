@@ -185,6 +185,35 @@ impl<'a> SolidityGenerator<'a> {
         Ok((verifier_output, vk_output))
     }
 
+    /// Render `Halo2VerifierReusable.sol` and `Halo2VerifyingArtifact.sol` parsed as "bytes32[] memory vka" calldata and return them as (String`,Vec<[u8; 32]>) .
+    pub fn render_separately_vka_words(&self) -> Result<(String, Vec<[u8; 32]>), fmt::Error> {
+        let mut verifier_output = String::new();
+        let mut vka_output = String::new();
+        self.render_separately_into(&mut verifier_output, &mut vka_output)?;
+
+        // Perform a regex search to find the vka words in the vka_output
+        // Look for lines containing "mstore(", then find the "," and finally capture the 64 chars after "0x"
+        let re = regex::Regex::new(r"mstore\(.*?,\s*0x([0-9a-fA-F]{64})").unwrap();
+
+        let mut vk_words = Vec::new();
+        for cap in re.captures_iter(&vka_output) {
+            if let Some(hex_word) = cap.get(1) {
+                let hex_str = hex_word.as_str();
+                let mut word = [0u8; 32];
+
+                // Convert the hex string to bytes
+                for i in 0..32 {
+                    let byte_str = &hex_str[i * 2..i * 2 + 2];
+                    word[i] = u8::from_str_radix(byte_str, 16).unwrap();
+                }
+
+                vk_words.push(word);
+            }
+        }
+
+        Ok((verifier_output, vk_words))
+    }
+
     fn dummy_vka_constants(&self) -> Vec<(&'static str, U256)> {
         // Number of words the num_advices_user_challenges will take up.
         let num_advices_len = self.meta.num_advices().len();
@@ -200,12 +229,11 @@ impl<'a> SolidityGenerator<'a> {
 
         let mut constants = vec![
             ("vk_digest", U256::from(0)),
-            ("vk_mptr", U256::from(0)),
-            ("vk_len", U256::from(0)),
+            ("fsm", U256::from(0)), // free static memory to place the challenges to ensure they are not overwritten.
             ("num_instances", U256::from(0)),
             ("num_evals", U256::from(0)),
             ("challenges_offset", U256::from(0)),
-            ("fsm_challenges", U256::from(0)), // The fsm position that we can move the num_advices_user_challenges to.
+            ("fsm_challenges", U256::from(0)), // The fsm position for the challenges section.
             ("k", U256::from(0)),
             ("n_inv", U256::from(0)),
             ("omega", U256::from(0)),
@@ -233,22 +261,14 @@ impl<'a> SolidityGenerator<'a> {
             ("pcs_computations_len_offset", U256::from(0)),
             ("num_neg_lagranges", U256::from(0)),
         ];
-        // Find the index of "fsm_challenges" and insert after it.
-        let fsm_challenges_index = constants
-            .iter()
-            .position(|(label, _)| *label == "fsm_challenges")
-            .unwrap();
 
         // Create a vector of tuples with the num_advices_user_challenges elements.
         let advices_entries: Vec<(&str, U256)> = (0..num_advices_user_challenges_capacity)
             .map(|i| (NUM_ADVICES_USER_CHALLENGES_LABELS[i], U256::from(0)))
             .collect();
 
-        // Insert the num_advices_user_challenges after the "fsm_challenges".
-        constants.splice(
-            fsm_challenges_index + 1..fsm_challenges_index + 1,
-            advices_entries,
-        );
+        // Insert the num_advices_user_challenges at the end of constants.
+        constants.extend(advices_entries);
 
         constants
     }
@@ -383,21 +403,24 @@ impl<'a> SolidityGenerator<'a> {
             .map(fr_to_u256)
             .collect::<Vec<_>>();
 
-        let vk_mptr_mock = self.estimate_static_working_memory_size(
-            &VerifyingCache::Key(&dummy_vk),
-            Ptr::calldata(0x84),
-        );
+        let dummy_verifying_cache = VerifyingCache::Key(&dummy_vk);
+
+        let fsm =
+            self.estimate_static_working_memory_size(&dummy_verifying_cache, Ptr::calldata(0x84));
+
+        let vk_mptr = 0xa0; // Memory location for where the start of the first word in the vka will be stored.
 
         let dummy_data = Data::new(
             &self.meta,
-            &VerifyingCache::Key(&dummy_vk),
-            Ptr::memory(vk_mptr_mock),
+            &dummy_verifying_cache,
+            Ptr::memory(vk_mptr),
             Ptr::calldata(0x84),
+            Some(fsm),
         );
 
         let mut vk_lookup_const_table_dummy: HashMap<ruint::Uint<256, 4>, Ptr> = HashMap::new();
 
-        let offset = vk_mptr_mock
+        let offset = vk_mptr
             + (dummy_vk.constants.len() * 0x20)
             + (dummy_vk.fixed_comms.len() + dummy_vk.permutation_comms.len()) * 0x40;
 
@@ -408,11 +431,14 @@ impl<'a> SolidityGenerator<'a> {
             vk_lookup_const_table_dummy.insert(const_expressions[idx], mptr);
         });
 
+        let vk_end_ptr = vk_mptr + dummy_vk.len(true);
+
         let evaluator_dummy = EvaluatorDynamic::new(
             self.vk.cs(),
             &self.meta,
             &dummy_data,
             vk_lookup_const_table_dummy,
+            vk_end_ptr,
         );
 
         // Fill in the quotient eval computations with dummy values. (maintains the correct shape)
@@ -434,7 +460,6 @@ impl<'a> SolidityGenerator<'a> {
             .copied()
             .collect::<Vec<_>>();
 
-        let mut fsm_challenges = 0x20 * (1 + self.num_instances); // initialize fsm_challenges with the space that loading the instances into memory will take up.
         let mut max_advices_value = 0; // Initialize variable to track the maximum value of *num_advices * 0x40
 
         let num_advices_user_challenges: Vec<U256> = {
@@ -480,8 +505,6 @@ impl<'a> SolidityGenerator<'a> {
             packed_words
         };
 
-        fsm_challenges += max_advices_value;
-
         // Iterate through the `num_advices_user_challenges` and update corresponding values in `constants`
         for (i, value) in num_advices_user_challenges.iter().enumerate() {
             if i >= NUM_ADVICES_USER_CHALLENGES_LABELS.len() {
@@ -497,19 +520,14 @@ impl<'a> SolidityGenerator<'a> {
         // Update constants
         let first_quotient_x_cptr = dummy_data.quotient_comm_cptr;
         let last_quotient_x_cptr = first_quotient_x_cptr + 2 * (self.meta.num_quotients - 1);
-        let gate_computations_len_offset = dummy_vk.len(true) + (const_expressions.len() * 0x20);
+        let gate_computations_len_offset =
+            vk_mptr + dummy_vk.len(true) + (const_expressions.len() * 0x20);
         let permutations_computations_len_offset =
             gate_computations_len_offset + (0x20 * gate_computations_dummy.len());
         let lookup_computations_len_offset =
             permutations_computations_len_offset + (0x20 * permutation_computations_dummy.len());
         let pcs_computations_len_offset =
             lookup_computations_len_offset + (0x20 * lookup_computations_dummy.len());
-
-        set_constant_value(
-            &mut dummy_vk.constants,
-            "fsm_challenges",
-            U256::from(fsm_challenges),
-        );
 
         set_constant_value(
             &mut dummy_vk.constants,
@@ -554,17 +572,14 @@ impl<'a> SolidityGenerator<'a> {
             pcs_computations: pcs_computations_dummy,
         };
 
-        // Now generate the real vk_mptr with a vk that has the correct length
-        let vk_mptr = self.estimate_static_working_memory_size(
+        // Now generate the real fsm with a vk that has the correct length
+        let fsm = self.estimate_static_working_memory_size(
             &VerifyingCache::Artifact(&vk),
             Ptr::calldata(0x84),
         );
 
-        // replace the mock vk_mptr with the real vk_mptr
-        set_constant_value(&mut vk.constants, "vk_mptr", U256::from(vk_mptr));
-        // replace the mock vk_len with the real vk_len
-        let vk_len = vk.len(true);
-        set_constant_value(&mut vk.constants, "vk_len", U256::from(vk_len));
+        // replace the mock fsm with the real fsm
+        set_constant_value(&mut vk.constants, "fsm", U256::from(fsm));
 
         // Generate the real data.
         let data = Data::new(
@@ -572,6 +587,7 @@ impl<'a> SolidityGenerator<'a> {
             &VerifyingCache::Artifact(&vk),
             Ptr::memory(vk_mptr),
             Ptr::calldata(0x84),
+            Some(fsm),
         );
 
         // Regenerate the gate computations with the correct offsets.
@@ -592,15 +608,21 @@ impl<'a> SolidityGenerator<'a> {
                 vk_lookup_const_table.insert(vk.const_expressions[idx], mptr);
             });
 
+        let vk_end_ptr = vk_mptr + vk.len(true);
+
         // Now we initalize the real evaluator_vk which will contain the correct offsets in the vk_lookup_const_table.
-        let evaluator =
-            EvaluatorDynamic::new(self.vk.cs(), &self.meta, &data, vk_lookup_const_table);
+        let evaluator = EvaluatorDynamic::new(
+            self.vk.cs(),
+            &self.meta,
+            &data,
+            vk_lookup_const_table,
+            vk_end_ptr,
+        );
 
         // NOTE: We don't need to replace the gate_computations_total_length since we are only potentially modifying the offsets for each constant mload operation.
         vk.gate_computations = evaluator.gate_computations();
         // We need to replace the lookup_computations so that the constant mptrs in the encoded input expessions have the correct offsets.
-        vk.lookup_computations =
-            evaluator.lookup_computations(vk_mptr + lookup_computations_len_offset);
+        vk.lookup_computations = evaluator.lookup_computations(lookup_computations_len_offset);
         vk
     }
 
@@ -610,7 +632,13 @@ impl<'a> SolidityGenerator<'a> {
         let vk = self.generate_vk(false);
         let vk_m = self.estimate_static_working_memory_size(&VerifyingCache::Key(&vk), proof_cptr);
         let vk_mptr = Ptr::memory(vk_m);
-        let data = Data::new(&self.meta, &VerifyingCache::Key(&vk), vk_mptr, proof_cptr);
+        let data = Data::new(
+            &self.meta,
+            &VerifyingCache::Key(&vk),
+            vk_mptr,
+            proof_cptr,
+            None,
+        );
 
         let evaluator = EvaluatorStatic::new(self.vk.cs(), &self.meta, &data);
         let quotient_eval_numer_computations: Vec<Vec<String>> = chain![
@@ -660,7 +688,7 @@ impl<'a> SolidityGenerator<'a> {
             .dummy_vka_constants()
             .iter()
             .enumerate()
-            .map(|(idx, &(key, _))| (key, U256::from(idx * 32)))
+            .map(|(idx, &(key, _))| (key, U256::from(160 + (idx * 32))))
             .collect();
 
         Halo2VerifierReusable {
@@ -670,8 +698,8 @@ impl<'a> SolidityGenerator<'a> {
     }
 
     fn estimate_static_working_memory_size(&self, vk: &VerifyingCache, proof_cptr: Ptr) -> usize {
-        let mock_vk_mptr = Ptr::memory(0x100000);
-        let mock = Data::new(&self.meta, vk, mock_vk_mptr, proof_cptr);
+        let mock_vk_mptr = Ptr::memory(0x100);
+        let mock = Data::new(&self.meta, vk, mock_vk_mptr, proof_cptr, None);
         let pcs_computation = match self.scheme {
             Bdfg21 => {
                 let (superset, sets) = rotation_sets(&queries(&self.meta, &mock));
@@ -687,8 +715,7 @@ impl<'a> SolidityGenerator<'a> {
                 self.meta.num_advices().into_iter().map(|n| n * 2 + 1),
                 [self.meta.num_evals + 1],
             ])
-            .unwrap()
-            .saturating_sub(vk.len(true) / 0x20),
+            .unwrap(),
             // PCS computation
             pcs_computation,
             // Pairing
@@ -715,6 +742,7 @@ impl<'a> SolidityGenerator<'a> {
                     &self.meta,
                     &mock,
                     vk_lookup_const_table_dummy,
+                    0x0,
                 );
 
                 let expression_eval_computations = evaluator.quotient_eval_fsm_usage();

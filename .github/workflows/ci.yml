@@ -29,7 +29,7 @@ jobs:
       - name: Run test (mv lookups)
         run: cargo test --workspace --all-features --all-targets -- --nocapture
       - name: Run test (non-mv lookups)
-        run: cargo test --workspace --all-targets -- --nocapture
+        run: cargo test --workspace --all-targets -- --nocapturecl
       - name: Run separate example
         run: cargo run --package halo2_solidity_verifier --example separately --all-features -- --nocapture
 

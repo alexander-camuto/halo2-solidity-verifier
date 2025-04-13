@@ -393,10 +393,16 @@ impl Data {
         vk: &VerifyingCache,
         vk_mptr: Ptr,
         proof_cptr: Ptr,
+        fsm_ptr: Option<usize>,
     ) -> Self {
         let fixed_comm_mptr: Ptr = vk_mptr + vk.constants().len();
         let permutation_comm_mptr = fixed_comm_mptr + 2 * vk.fixed_comms().len();
         let challenge_mptr = vk_mptr + vk.len(false);
+        let challenge_mptr = if let Some(fsm_ptr) = fsm_ptr {
+            challenge_mptr + (fsm_ptr / 0x20)
+        } else {
+            challenge_mptr
+        };
         let theta_mptr = challenge_mptr + meta.challenge_indices.len();
 
         let advice_comm_start = proof_cptr;
@@ -514,10 +520,16 @@ impl Data {
         vk: &VerifyingCache,
         vk_mptr: Ptr,
         proof_cptr: Ptr,
+        fsm_ptr: Option<usize>, // If none, then that means the first [0x00..vk_mptr] space is allocated for fsm.. Otherwise, it is [(vk_mptr+vk.len(false)..challenge_mptr]
     ) -> Self {
         let fixed_comm_mptr: Ptr = vk_mptr + vk.constants().len();
         let permutation_comm_mptr = fixed_comm_mptr + 2 * vk.fixed_comms().len();
         let challenge_mptr = vk_mptr + vk.len(false);
+        let challenge_mptr = if let Some(fsm_ptr) = fsm_ptr {
+            challenge_mptr + (fsm_ptr / 0x20)
+        } else {
+            challenge_mptr
+        };
         let theta_mptr = challenge_mptr + meta.challenge_indices.len();
 
         let advice_comm_start = proof_cptr;

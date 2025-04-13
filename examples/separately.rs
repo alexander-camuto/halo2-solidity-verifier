@@ -35,18 +35,12 @@ fn main() {
         let vk = keygen_vk(&params[&k], &circuit).unwrap();
         let pk = keygen_pk(&params[&k], vk, &circuit).unwrap();
         let generator = SolidityGenerator::new(&params[&k], pk.get_vk(), Bdfg21, num_instances);
-        let (verifier_solidity, vk_solidity) = generator.render_separately().unwrap();
-        save_solidity(format!("Halo2VerifyingArtifact-{k}.sol"), &vk_solidity);
-
-        assert_eq!(deployed_verifier_solidity, verifier_solidity);
-
-        let vk_creation_code = compile_solidity(&vk_solidity);
-        let (vk_address, _) = evm.create(vk_creation_code);
+        let (verifier_solidity, vka_words) = generator.render_separately_vka_words().unwrap();
 
         let calldata = {
             let instances = circuit.instances();
             let proof = create_proof_checked(&params[&k], &pk, circuit, &instances, &mut rng);
-            encode_calldata(Some(vk_address.into()), &proof, &instances)
+            encode_calldata(Some(&vka_words), &proof, &instances)
         };
         let (gas_cost, output) = evm.call(verifier_address, calldata);
         assert_eq!(output, [vec![0; 31], vec![1]].concat());

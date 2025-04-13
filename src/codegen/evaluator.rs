@@ -577,6 +577,7 @@ pub(crate) struct EvaluatorDynamic<'a, F: PrimeField> {
     meta: &'a ConstraintSystemMeta,
     data: &'a Data,
     static_mem_ptr: RefCell<usize>,
+    vka_end_ptr: usize,
     encoded_var_cache: RefCell<HashMap<U256, U256>>,
     const_cache: RefCell<HashMap<ruint::Uint<256, 4>, Ptr>>,
 }
@@ -590,12 +591,14 @@ where
         meta: &'a ConstraintSystemMeta,
         data: &'a Data,
         const_cache: HashMap<ruint::Uint<256, 4>, Ptr>,
+        vka_end_ptr: usize,
     ) -> Self {
         Self {
             cs,
             meta,
             data,
-            static_mem_ptr: RefCell::new(0x00),
+            static_mem_ptr: RefCell::new(vka_end_ptr),
+            vka_end_ptr,
             encoded_var_cache: Default::default(),
             const_cache: RefCell::new(const_cache),
         }
@@ -719,8 +722,8 @@ where
         let permutation_computation_fsm_usage = (self.data.permutation_z_evals.len() * 0x20) + 0x40;
 
         let evaluate_fsm_usage = |idx: usize, expressions: &Vec<_>| {
-            let offset = 0xa0; // offset to store theta offset ptrs used
-                               // in the lookup computations.
+            let offset = 0xa0 + self.vka_end_ptr; // offset to store theta offset ptrs used
+                                                  // in the lookup computations.
             let fsm = (0x20 * idx) + offset;
             self.set_static_mem_ptr(fsm);
             let max_fsm_usage = expressions
@@ -766,7 +769,7 @@ where
             .map(|lookup| {
                 let [packed_table_expr, packed_input_expr] =
                     [lookup.table_expressions(), lookup.input_expressions()].map(|expressions| {
-                        let fsm = 0xc0; // offset to store theta offset ptrs used in the non mv lookup computations.
+                        let fsm = 0xc0 + self.vka_end_ptr; // offset to store theta offset ptrs used in the non mv lookup computations.
                         self.set_static_mem_ptr(fsm);
                         let (lines, inputs) = expressions
                             .iter()
@@ -877,7 +880,7 @@ where
     #[cfg(feature = "mv-lookup")]
     pub fn lookup_computations(&self, offset: usize) -> LookupsDataEncoded {
         let evaluate_table = |expressions: &Vec<_>| {
-            let offset = 0xa0; // offset to store theta offset ptrs used in the reusable verifier (need to do this to avoid stack too deep errors)
+            let offset = 0xa0 + self.vka_end_ptr; // offset to store theta offset ptrs used in the reusable verifier (need to do this to avoid stack too deep errors)
             self.set_static_mem_ptr(offset); // println!("expressions: {:?}", expressions);
             let (lines, inputs) = expressions
                 .iter()
@@ -893,8 +896,8 @@ where
 
         let evaluate_inputs = |idx: usize, expressions: &Vec<_>| {
             // println!("expressions: {:?}", expressions);
-            let offset = 0xa0; // offset to store theta offset ptrs used
-                               // in the lookup computations.
+            let offset = 0xa0 + self.vka_end_ptr; // offset to store theta offset ptrs used
+                                                  // in the lookup computations.
             let fsm = (0x20 * idx) + offset;
             self.set_static_mem_ptr(fsm);
             let (lines, inputs) = expressions
@@ -1032,25 +1035,31 @@ where
         rotation: i32,
     ) -> U256 {
         match column_type.into() {
-            Any::Advice(_) => self.encode_single_operand(
-                0_u8,
-                U256::from(
-                    self.data.advice_evals[&(column_index, rotation)]
-                        .ptr()
-                        .value()
-                        .as_usize(),
-                ),
-            ),
-            Any::Fixed => self.encode_single_operand(
-                0_u8,
-                U256::from(
-                    self.data.fixed_evals[&(column_index, rotation)]
-                        .ptr()
-                        .value()
-                        .as_usize(),
-                ),
-            ),
-            Any::Instance => self.encode_single_operand(1_u8, U256::from(0)), // On the EVM side the 0x0 op here we will inidicate that we need to perform the l_0 mload operation.
+            Any::Advice(_) => self
+                .encode_single_operand(
+                    0_u8,
+                    U256::from(
+                        self.data.advice_evals[&(column_index, rotation)]
+                            .ptr()
+                            .value()
+                            .as_usize(),
+                    ),
+                )
+                .expect("Advice evals encoding exeeds bit capacity"),
+            Any::Fixed => self
+                .encode_single_operand(
+                    0_u8,
+                    U256::from(
+                        self.data.fixed_evals[&(column_index, rotation)]
+                            .ptr()
+                            .value()
+                            .as_usize(),
+                    ),
+                )
+                .expect("Fixed evals encoding exeeds bit capacity"),
+            Any::Instance => self
+                .encode_single_operand(1_u8, U256::from(0))
+                .expect("Instance evals encoding exceeds bit capacity"), // On the EVM side the 0x0 op here we will inidicate that we need to perform the l_0 mload operation.
         }
     }
 
@@ -1058,16 +1067,32 @@ where
     // any of the steps require the same var then just return the pointer to the var instead of encoding it again
 
     fn reset(&self) {
-        *self.static_mem_ptr.borrow_mut() = 0x0;
+        *self.static_mem_ptr.borrow_mut() = self.vka_end_ptr;
         *self.encoded_var_cache.borrow_mut() = Default::default();
     }
 
-    fn encode_operation(&self, op: u8, lhs_ptr: U256, rhs_ptr: U256) -> U256 {
-        U256::from(op) | (lhs_ptr << 8) | (rhs_ptr << 24)
+    fn encode_operation(&self, op: u8, lhs_ptr: U256, rhs_ptr: U256) -> Result<U256, String> {
+        let max_16_bits: U256 = U256::from(1u64 << 16);
+        // Ensure lhs_ptr fits in 16 bits
+        if lhs_ptr >= max_16_bits {
+            return Err("lhs_ptr exceeds 16 bits".to_owned());
+        }
+        // Ensure rhs_ptr fits in 16 bits
+        if rhs_ptr >= max_16_bits {
+            return Err("rhs_ptr exceeds 16 bits".to_owned());
+        }
+
+        Ok(U256::from(op) | (lhs_ptr << 8) | (rhs_ptr << 24))
     }
 
-    fn encode_single_operand(&self, op: u8, ptr: U256) -> U256 {
-        U256::from(op) | (ptr << 8)
+    fn encode_single_operand(&self, op: u8, ptr: U256) -> Result<U256, String> {
+        let max_16_bits: U256 = U256::from(1u64 << 16);
+        // Ensure ptr fits in 16 bits
+        if ptr >= max_16_bits {
+            return Err("ptr exceeds 16 bits".to_owned());
+        }
+
+        Ok(U256::from(op) | (ptr << 8))
     }
 
     fn encode_triplet_evaluation_word(
@@ -1163,7 +1188,7 @@ where
     }
 
     fn evaluate_and_reset(&self, expression: &Expression<F>, pack: bool) -> Vec<U256> {
-        *self.static_mem_ptr.borrow_mut() = 0x0;
+        *self.static_mem_ptr.borrow_mut() = self.vka_end_ptr;
         let result = self.evaluate_encode(expression);
         self.reset();
         let res = result.0;
@@ -1195,6 +1220,12 @@ where
                 )
             },
             &|_| {
+                let value = U256::from((self.data.theta_mptr + 17).value().as_usize());
+                // assert that the value takes up less than 16 bits
+                assert!(
+                    value < U256::from(1u64 << 16),
+                    "Instance eval ptr exceeds 16 bits"
+                );
                 self.init_encoded_var(
                     // instance eval ptr located 17 words after the theta mptr
                     U256::from((self.data.theta_mptr + 17).value().as_usize()),
@@ -1202,19 +1233,23 @@ where
                 )
             },
             &|challenge| {
-                self.init_encoded_var(
-                    U256::from(
-                        self.data.challenges[challenge.index()]
-                            .ptr()
-                            .value()
-                            .as_usize(),
-                    ),
-                    OperandMem::Challenge,
-                )
+                let value = U256::from(
+                    self.data.challenges[challenge.index()]
+                        .ptr()
+                        .value()
+                        .as_usize(),
+                );
+                // assert that the value takes up less than 16 bits
+                assert!(
+                    value < U256::from(1u64 << 16),
+                    "Challenge eval ptr exceeds 16 bits"
+                );
+                self.init_encoded_var(value, OperandMem::Challenge)
             },
             &|(mut acc, var)| {
                 let (lines, var) = self.init_encoded_var(
-                    self.encode_single_operand(1_u8, var),
+                    self.encode_single_operand(1_u8, var)
+                        .expect("Negated encoding exceeds bit capacity"),
                     OperandMem::StaticMemory,
                 );
                 acc.extend(lines);
@@ -1222,7 +1257,8 @@ where
             },
             &|(mut lhs_acc, lhs_var), (rhs_acc, rhs_var)| {
                 let (lines, var) = self.init_encoded_var(
-                    self.encode_operation(2_u8, lhs_var, rhs_var),
+                    self.encode_operation(2_u8, lhs_var, rhs_var)
+                        .expect("Sum encoding exceeds bit capacity"),
                     OperandMem::StaticMemory,
                 );
                 lhs_acc.extend(rhs_acc);
@@ -1231,7 +1267,8 @@ where
             },
             &|(mut lhs_acc, lhs_var), (rhs_acc, rhs_var)| {
                 let (lines, var) = self.init_encoded_var(
-                    self.encode_operation(3_u8, lhs_var, rhs_var),
+                    self.encode_operation(3_u8, lhs_var, rhs_var)
+                        .expect("Product encoding exceeds bit capacity"),
                     OperandMem::StaticMemory,
                 );
                 lhs_acc.extend(rhs_acc);
@@ -1242,7 +1279,8 @@ where
                 // fetch the scalar pointer from the const cache
                 let scalar_ptr = self.const_cache.borrow()[&scalar];
                 let (lines, var) = self.init_encoded_var(
-                    self.encode_operation(3_u8, var, U256::from(scalar_ptr.value().as_usize())),
+                    self.encode_operation(3_u8, var, U256::from(scalar_ptr.value().as_usize()))
+                        .expect("Scaled encoding exceeds bit capacity"),
                     OperandMem::StaticMemory,
                 );
                 acc.extend(lines);

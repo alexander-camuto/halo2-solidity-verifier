@@ -16,7 +16,7 @@ mod test;
 pub use codegen::{AccumulatorEncoding, BatchOpenScheme, SolidityGenerator};
 pub use evm::{
     encode_calldata, encode_calldata_malicious, encode_calldata_malicious_wrapper,
-    FN_SIG_VERIFY_PROOF, FN_SIG_VERIFY_PROOF_WITH_VK_ADDRESS,
+    FN_SIG_VERIFY_PROOF, FN_SIG_VERIFY_PROOF_WITH_VKA,
 };
 pub use transcript::Keccak256Transcript;
 

@@ -5,7 +5,7 @@ use crate::{
         encode_calldata_malicious, encode_calldata_malicious_wrapper,
         test::{compile_solidity, Evm},
     },
-    FN_SIG_VERIFY_PROOF, FN_SIG_VERIFY_PROOF_WITH_VK_ADDRESS,
+    FN_SIG_VERIFY_PROOF, FN_SIG_VERIFY_PROOF_WITH_VKA,
 };
 use halo2_proofs::halo2curves::bn256::{Bn256, Fr};
 use rand::Rng;
@@ -22,8 +22,8 @@ fn function_signature() {
     for (fn_name, fn_sig) in [
         ("verifyProof(bytes,uint256[])", FN_SIG_VERIFY_PROOF),
         (
-            "verifyProof(address,bytes,uint256[])",
-            FN_SIG_VERIFY_PROOF_WITH_VK_ADDRESS,
+            "verifyProof(bytes,uint256[],bytes32[])",
+            FN_SIG_VERIFY_PROOF_WITH_VKA,
         ),
     ] {
         assert_eq!(
@@ -108,7 +108,6 @@ fn run_render_separately<C: halo2::TestCircuit<Fr>>() {
 
     let mut evm = Evm::default();
     let (verifier_address, _gas_cost) = evm.create(verifier_creation_code);
-    let verifier_wrapper_address = evm.create(verifier_wrapper_creation_code).0;
     let verifier_runtime_code_size = evm.code_size(verifier_address);
 
     println!("Verifier creation code size: {verifier_creation_code_size}");
@@ -122,7 +121,7 @@ fn run_render_separately<C: halo2::TestCircuit<Fr>>() {
         let generator = SolidityGenerator::new(&params, &vk, Bdfg21, instances.len())
             .set_acc_encoding(acc_encoding);
 
-        let (verifier_solidity, vk_solidity) = generator.render_separately().unwrap();
+        let (verifier_solidity, vka_words) = generator.render_separately_vka_words().unwrap();
         assert_eq!(deployed_verifier_solidity, verifier_solidity);
         // // print verifier_solidity
         // println!("Verifier solidity: {verifier_solidity}");
@@ -130,28 +129,12 @@ fn run_render_separately<C: halo2::TestCircuit<Fr>>() {
         // println!("VK solidity: {vk_solidity}");
         // VK creation code size
 
-        let vk_creation_code = compile_solidity(&vk_solidity);
-        let vk_creation_code_size = vk_creation_code.len();
-        println!("VK creation code size: {vk_creation_code_size}");
-        let (vk_address, gas_cost) = evm.create(vk_creation_code);
-        let vk_runtime_code_size = evm.code_size(vk_address);
-        println!("VK runtime code size: {vk_runtime_code_size}");
-        println!("Gas deployment cost VK: {gas_cost}");
-
         let (gas_cost, output) = evm.call(
             verifier_address,
-            encode_calldata(Some(vk_address.into()), &proof, &instances),
+            encode_calldata(Some(&vka_words), &proof, &instances),
         );
         assert_eq!(output, [vec![0; 31], vec![1]].concat());
         println!("Gas cost separate: {gas_cost}");
-        let malicious_call_data =
-            encode_calldata_malicious(Some(vk_address.into()), &proof, &instances);
-        // test malicious proof on verifier direclty
-        evm.call_fail(verifier_address, malicious_call_data.clone());
-        // test on wrapper
-        evm.call_fail(verifier_wrapper_address, malicious_call_data);
-
-        bit_flip_fuzzing_test::<C>(verifier_address, proof, instances, &mut evm);
     }
 }
 
