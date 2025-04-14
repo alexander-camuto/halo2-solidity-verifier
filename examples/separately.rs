@@ -3,8 +3,8 @@ use prelude::*;
 
 use halo2_proofs::poly::commitment::Params;
 use halo2_solidity_verifier::{
-    compile_solidity, encode_calldata, BatchOpenScheme::Bdfg21, Evm, Keccak256Transcript,
-    SolidityGenerator,
+    compile_solidity, encode_calldata, encode_register_vk_calldata, BatchOpenScheme::Bdfg21, Evm,
+    Keccak256Transcript, SolidityGenerator,
 };
 
 const K_RANGE: Range<u32> = 10..17;
@@ -34,6 +34,9 @@ fn main() {
         let pk = keygen_pk(&params[&k], vk, &circuit).unwrap();
         let generator = SolidityGenerator::new(&params[&k], pk.get_vk(), Bdfg21, num_instances);
         let (_verifier_solidity, vka_words) = generator.render_separately_vka_words().unwrap();
+
+        // Register vka
+        evm.call(verifier_address, encode_register_vk_calldata(&vka_words));
 
         let calldata = {
             let instances = circuit.instances();

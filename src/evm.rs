@@ -9,14 +9,17 @@ pub const FN_SIG_VERIFY_PROOF: [u8; 4] = [0x1e, 0x8e, 0x1e, 0x13];
 /// Function signature of `verifyProof(bytes,uint256[],bytes32[])`.
 pub const FN_SIG_VERIFY_PROOF_WITH_VKA: [u8; 4] = [0x34, 0x09, 0xfc, 0x9f];
 
-/// Function signature of verifyWithDataAttestation(address,bytes) 0x4c7985d0
+/// Function signature of verifyWithDataAttestation(address,bytes)
 pub const FN_SIG_VERIFY_WITH_DATA_ATTESTATION: [u8; 4] = [0x4c, 0x79, 0x85, 0xd0];
+
+/// Function signatore of registeredVkas(bytes32[]) 0xdc8b4094
+pub const FN_SIG_REGISTER_VKA: [u8; 4] = [0xdc, 0x8b, 0x40, 0x94];
 
 /// Encode proof into calldata to invoke `Halo2Verifier.verifyProof`.
 ///
 /// For `vk_address`:
 /// - Pass `None` if verifying key is embedded in `Halo2Verifier`
-/// - Pass `Some(vk_address)` if verifying key is separated and deployed at `vk_address`
+/// - Pass `Some(vka)` if verifying key is separated and already registered
 pub fn encode_calldata(vka: Option<&[[u8; 32]]>, proof: &[u8], instances: &[bn256::Fr]) -> Vec<u8> {
     let (fn_sig, offset) = if vka.is_some() {
         (FN_SIG_VERIFY_PROOF_WITH_VKA, 0x60)
@@ -44,6 +47,21 @@ pub fn encode_calldata(vka: Option<&[[u8; 32]]>, proof: &[u8], instances: &[bn25
         instances.iter().map(fr_to_u256).flat_map(to_u256_be_bytes), // instances
         to_u256_be_bytes(num_vka_words),                             // vka length
         vka_data.iter().flat_map(|arr| arr.iter().cloned())          // vka words
+    ]
+    .collect()
+}
+
+/// Encode vka into calldata to invoke `Halo2VerifierReusable.registerVka`.
+///
+pub fn encode_register_vk_calldata(vka: &[[u8; 32]]) -> Vec<u8> {
+    let vka_data = vka.to_vec();
+    let num_vka_words = vka_data.len();
+    let offset = 0x20;
+    chain![
+        FN_SIG_REGISTER_VKA,                                 // function signature
+        to_u256_be_bytes(offset),                            // offset of vka
+        to_u256_be_bytes(num_vka_words),                     // vka length
+        vka_data.iter().flat_map(|arr| arr.iter().cloned())  // vka words
     ]
     .collect()
 }

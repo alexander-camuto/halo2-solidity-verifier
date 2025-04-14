@@ -1,6 +1,6 @@
 use crate::{
     codegen::{AccumulatorEncoding, BatchOpenScheme::Bdfg21, SolidityGenerator},
-    encode_calldata,
+    encode_calldata, encode_register_vk_calldata,
     evm::{
         encode_calldata_malicious, encode_calldata_malicious_wrapper,
         test::{compile_solidity, Evm},
@@ -126,6 +126,16 @@ fn run_render_separately<C: halo2::TestCircuit<Fr>>() {
         // println!("VK solidity: {vk_solidity}");
         // VK creation code size
 
+        // Expect the call to fail if the vka has not been registered
+        evm.call_fail(
+            verifier_address,
+            encode_calldata(Some(&vka_words), &proof, &instances),
+        );
+
+        // Register the VKA
+        evm.call(verifier_address, encode_register_vk_calldata(&vka_words));
+
+        // Call the verifier, passsing the VKA as a param.
         let (gas_cost, output) = evm.call(
             verifier_address,
             encode_calldata(Some(&vka_words), &proof, &instances),

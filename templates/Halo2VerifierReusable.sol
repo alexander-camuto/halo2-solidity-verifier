@@ -10,7 +10,25 @@ contract Halo2VerifierReusable {
     uint256 internal constant    PTR_BITMASK = 0xFFFF;
     uint256 internal constant    BYTE_FLAG_BITMASK = 0xFF;
 
+    // Mapping that logs all registered vkas
+    mapping(bytes32 => bool) registeredVkas;
 
+    // Define an event that gets emited each time a vka is registered
+    event VkaRegistered (
+        address indexed from,
+        bytes32 indexed digest,
+        bytes32[] indexed vka
+    );
+
+    function registerVka(
+        bytes32[] memory vka
+    ) public returns (bytes32 vka_digest) {
+        assembly {
+            vka_digest := keccak256(add(vka, 0x20), mload(vka))
+        }
+        registeredVkas[vka_digest] = true;
+        emit VkaRegistered(msg.sender, vka_digest, vka);
+    }
 
     function verifyProof(
         bytes calldata proof,
@@ -824,6 +842,19 @@ contract Halo2VerifierReusable {
 
                 // Read the free memory ptr
                 vka_end := mload(0x40)
+
+                // compute hash of vka_digest and store it into memory
+                mstore(vka_end, keccak256(add(vka, 0x20), mload(vka)))
+                
+                // store the slot of the registered_vkas mapping in memory too
+                mstore(add(vka_end, 0x20), registeredVkas.slot)
+
+                // Check if the vka_digest is in the registered_vkas mapping.
+                // If not revert
+                if eq(sload(keccak256(vka_end, 0x40)), 0x00){
+                    // vka_digest not registered yet
+                    revert(0x00, 0x00)
+                }
 
                 // copy the vka_digest to the vka_end location
                 mstore(vka_end, mload({{ vk_const_offsets["vk_digest"]|hex() }}))
