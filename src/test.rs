@@ -58,8 +58,18 @@ fn run_render<C: halo2::TestCircuit<Fr>>() {
     let (params, vk, instances, proof) =
         halo2::create_testdata_bdfg21::<C>(C::min_k(), acc_encoding, std_rng());
 
-    let generator = SolidityGenerator::new(&params, &vk, Bdfg21, instances.len())
-        .set_acc_encoding(acc_encoding);
+    let default_scales = [7];
+    let default_decimals = 18;
+    let generator = SolidityGenerator::new(
+        &params,
+        &vk,
+        Bdfg21,
+        &[instances.len()],
+        &default_scales,
+        Some(default_decimals),
+        None,
+    )
+    .set_acc_encoding(acc_encoding);
     let verifier_solidity = generator.render().unwrap();
     let verifier_creation_code = compile_solidity(verifier_solidity);
     let verifier_creation_code_size = verifier_creation_code.len();
@@ -97,8 +107,19 @@ fn run_render_separately<C: halo2::TestCircuit<Fr>>() {
     let (params, vk, instances, _) =
         halo2::create_testdata_bdfg21::<C>(C::min_k(), acc_encoding, std_rng());
 
-    let generator = SolidityGenerator::new(&params, &vk, Bdfg21, instances.len())
-        .set_acc_encoding(acc_encoding);
+    let default_scales = [7];
+    let default_decimals = 18;
+
+    let generator = SolidityGenerator::new(
+        &params,
+        &vk,
+        Bdfg21,
+        &[instances.len()],
+        &default_scales,
+        Some(default_decimals),
+        None,
+    )
+    .set_acc_encoding(acc_encoding);
     let (verifier_solidity, _vk_solidity) = generator.render_separately().unwrap();
     let verifier_creation_code = compile_solidity(&verifier_solidity);
     let verifier_creation_code_size = verifier_creation_code.len();
@@ -115,8 +136,16 @@ fn run_render_separately<C: halo2::TestCircuit<Fr>>() {
     for k in C::min_k()..C::min_k() + 4 {
         let (params, vk, instances, proof) =
             halo2::create_testdata_bdfg21::<C>(k, acc_encoding, std_rng());
-        let generator = SolidityGenerator::new(&params, &vk, Bdfg21, instances.len())
-            .set_acc_encoding(acc_encoding);
+        let generator = SolidityGenerator::new(
+            &params,
+            &vk,
+            Bdfg21,
+            &[instances.len()],
+            &default_scales,
+            Some(default_decimals),
+            None,
+        )
+        .set_acc_encoding(acc_encoding);
 
         let (verifier_solidity, vka_words) = generator.render_separately_vka_words().unwrap();
         assert_eq!(deployed_verifier_solidity, verifier_solidity);
@@ -133,14 +162,15 @@ fn run_render_separately<C: halo2::TestCircuit<Fr>>() {
         );
 
         // Register the VKA
-        evm.call(verifier_address, encode_register_vk_calldata(&vka_words));
+        let (_gas_cost, vka_digest) =
+            evm.call(verifier_address, encode_register_vk_calldata(&vka_words));
 
         // Call the verifier, passsing the VKA as a param.
         let (gas_cost, output) = evm.call(
             verifier_address,
             encode_calldata(Some(&vka_words), &proof, &instances),
         );
-        assert_eq!(output, [vec![0; 31], vec![1]].concat());
+        assert_eq!(output[..64], [vec![0; 31], vec![1], vka_digest].concat());
         println!("Gas cost separate: {gas_cost}");
     }
 }

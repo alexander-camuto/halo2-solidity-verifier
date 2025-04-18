@@ -42,6 +42,7 @@ pub(crate) struct Halo2VerifyingArtifact {
     pub(crate) permutation_computations: PermutationDataEncoded,
     pub(crate) lookup_computations: LookupsDataEncoded,
     pub(crate) pcs_computations: PcsDataEncoded,
+    pub(crate) rescaling_computations: Vec<U256>,
 }
 
 impl Halo2VerifyingArtifact {
@@ -52,7 +53,8 @@ impl Halo2VerifyingArtifact {
             + self.gate_computations.len()
             + self.permutation_computations.len()
             + self.lookup_computations.len()
-            + self.pcs_computations.len();
+            + self.pcs_computations.len()
+            + self.rescaling_computations.len();
         if scaled {
             len * 0x20
         } else {

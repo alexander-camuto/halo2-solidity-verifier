@@ -15,7 +15,8 @@ fn main() {
     let params = setup(K_RANGE, &mut rng);
 
     let vk = keygen_vk(&params[&K_RANGE.start], &StandardPlonk::default()).unwrap();
-    let generator = SolidityGenerator::new(&params[&K_RANGE.start], &vk, Bdfg21, 0);
+    let generator =
+        SolidityGenerator::new(&params[&K_RANGE.start], &vk, Bdfg21, &[0], &[0], None, None);
     let (verifier_solidity, _) = generator.render_separately().unwrap();
     save_solidity("Halo2VerifierReusable.sol", &verifier_solidity);
 
@@ -32,11 +33,19 @@ fn main() {
 
         let vk = keygen_vk(&params[&k], &circuit).unwrap();
         let pk = keygen_pk(&params[&k], vk, &circuit).unwrap();
-        let generator = SolidityGenerator::new(&params[&k], pk.get_vk(), Bdfg21, num_instances);
+        let generator = SolidityGenerator::new(
+            &params[&k],
+            pk.get_vk(),
+            Bdfg21,
+            &[num_instances],
+            &[0],
+            None,
+            None,
+        );
         let (_verifier_solidity, vka_words) = generator.render_separately_vka_words().unwrap();
 
         // Register vka
-        evm.call(verifier_address, encode_register_vk_calldata(&vka_words));
+        let (_, vka_digest) = evm.call(verifier_address, encode_register_vk_calldata(&vka_words));
 
         let calldata = {
             let instances = circuit.instances();
@@ -44,7 +53,7 @@ fn main() {
             encode_calldata(Some(&vka_words), &proof, &instances)
         };
         let (gas_cost, output) = evm.call(verifier_address, calldata);
-        assert_eq!(output, [vec![0; 31], vec![1]].concat());
+        assert_eq!(output[..64], [vec![0; 31], vec![1], vka_digest].concat());
         println!("Gas cost of verifying standard Plonk with 2^{k} rows: {gas_cost}");
     }
 }

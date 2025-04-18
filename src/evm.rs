@@ -161,6 +161,8 @@ pub(crate) mod test {
             .stderr(Stdio::piped())
             .arg("--bin")
             .arg("--optimize")
+            .arg("--optimize-runs")
+            .arg("1")
             .arg("--model-checker-targets")
             .arg("underflow,overflow")
             .arg("-")

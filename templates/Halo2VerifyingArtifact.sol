@@ -79,7 +79,12 @@ contract Halo2VerifyingArtifact {
             {%- for pairing_input_word in pcs_computations.pairing_input_computations %}
             mstore({{ (32 * (offset_15 + loop.index0))|hex_padded(4) }}, {{ pairing_input_word|hex_padded(64) }}) // pairing_input_computations[{{ loop.index0 }}]
             {%- endfor %}
-            return(0, {{ (32 * (offset_8 + pcs_computations.len()))|hex() }})
+            {%- let offset_16 = offset_15 + pcs_computations.pairing_input_computations.len() %}
+            {%- for rescaling_word in rescaling_computations %}
+            mstore({{ (32 * (offset_16 + loop.index0))|hex_padded(4) }}, {{ rescaling_word|hex_padded(64) }}) // rescaling_computations[{{ loop.index0 }}]
+            {%- endfor %}
+            {%- let offset_17 = offset_16 + rescaling_computations.len() %}
+            return(0, {{ (32 * (offset_17))|hex() }})
         }
     }
 }

@@ -2,13 +2,14 @@
 
 pragma solidity ^0.8.0;
 
-contract Halo2VerifierReusable {
+contract Halo2VerifierReusable { 
 
     uint256 internal constant    Q = 21888242871839275222246405745257275088696311157297823662689037894645226208583;
     uint256 internal constant    R = 21888242871839275222246405745257275088548364400416034343698204186575808495617; // BN254 scalar field
     uint256 internal constant    DELTA = 4131629893567559867359510883348571134090853742863529169391034518566172092834;
     uint256 internal constant    PTR_BITMASK = 0xFFFF;
     uint256 internal constant    BYTE_FLAG_BITMASK = 0xFF;
+    uint256 internal constant    INT_128_MAX = 170141183460469231731687303715884105727;
 
     // Mapping that logs all registered vkas
     mapping(bytes32 => bool) registeredVkas;
@@ -30,11 +31,96 @@ contract Halo2VerifierReusable {
         emit VkaRegistered(msg.sender, vka_digest, vka);
     }
 
+    /**
+     * @dev Verifies a proof against the provided public inputs (instances) and verification key accumulator (vka).
+     *      Returns whether the proof is valid, the digest of the verification key artifact, and the rescaled instances.
+     *
+     * @param proof The proof data provided as calldata.
+     * @param instances The public inputs (instances) provided as calldata.
+     * @param vka The verification key artifact provided as memory.
+     *
+     * @return success A boolean indicating whether the proof verification was successful.
+     * @return vka_digest The digest of the verification key artifact.
+     * @return rescaled_instances An array of rescaled public inputs (instances).
+        *NOTE : Depending on the circuit setup the up to the first 3 instance will be hashes (input/output/param). 
+        *       We do not rescale these instances. 
+     */
     function verifyProof(
         bytes calldata proof,
         uint256[] calldata instances,
         bytes32[] memory vka
-    ) public returns (bool) {
+    ) external returns (bool success, bytes32 vka_digest, int256[] memory rescaled_instances) {
+        assembly {
+            vka_digest := keccak256(add(vka, 0x20), mload(vka))
+        }
+        require(registeredVkas[vka_digest], "VKA not registered");
+        success = _verifyProof(proof, instances, vka);
+        assembly {
+            // Perform the rescaling of the instances
+            let rescaled_mptr := rescaled_instances
+            // fetch the rescaling data from the vk
+            let rescaling_data_ptr := {{ vk_const_offsets["rescaling_computations_len_offset"]|hex() }}
+            let rescaling_data := mload(rescaling_data_ptr)
+            // extract num_words 
+            let num_words := and(rescaling_data, BYTE_FLAG_BITMASK)
+            rescaling_data := shr(8, rescaling_data)
+            // extract the decimals used for the rescaling from felt fixed points to floats
+            let decimals := exp(10, and(rescaling_data, BYTE_FLAG_BITMASK))
+            rescaling_data := shr(8, rescaling_data)
+            // extract the number of hashes processed by the circuit
+            let num_hashes := and(rescaling_data, BYTE_FLAG_BITMASK)
+            rescaling_data := shr(8, rescaling_data)
+            // instance_cptr offset by the number of hashes (we don't want to rescale hashes)
+            let instance_cptr := add(instances.offset, mul(0x20, num_hashes))
+            // store the length of the rescaled instances
+            mstore(rescaled_mptr, sub(mload({{ vk_const_offsets["num_instances"]|hex() }}), num_hashes))
+            rescaled_mptr := add(rescaled_mptr, 0x20)
+            for { let i := 0 } lt(i, num_words) { i := add(i, 1) } {
+                rescaling_data_ptr := add(rescaling_data_ptr, 0x20)
+                for { } rescaling_data { } {
+                    // extract num_instances
+                    let num_instances := and(rescaling_data, PTR_BITMASK)
+                    rescaling_data := shr(16, rescaling_data)
+                    // extract the scale value (bits preserved in the fixed point representation of the instance)
+                    let scale := shl(1, and(rescaling_data, PTR_BITMASK))
+                    rescaling_data := shr(8, rescaling_data)
+                    for { let j := instance_cptr } lt(j, add(num_instances, instance_cptr)) { j := add(j, 0x20) } {
+                        let instance := calldataload(j)
+                        let neg
+                        if gt(instance, INT_128_MAX) {
+                            instance := sub(R, instance)
+                            neg := 1
+                        }
+                        // Perform on-chain rounding
+                        let output := add(
+                            div(mul(instance, decimals), scale), 
+                                gt(add(
+                                    mul(mulmod(instance, decimals, scale), 2), 
+                                    1
+                                ), 
+                                scale
+                            )
+                        )
+                        // Now if neg is true compute the two's compliment of the output.
+                        if neg {
+                            output := sub(0, output)
+                        }
+                        // Store the output at the rescaled mptr
+                        mstore(rescaled_mptr, output)
+                        rescaled_mptr := add(rescaled_mptr, 0x20)
+                    }
+                    instance_cptr := add(instance_cptr, add(num_instances, 0x20))
+                }
+                rescaling_data := mload(rescaling_data_ptr)
+            }
+        }
+    }
+
+    function _verifyProof(
+        bytes calldata proof,
+        uint256[] calldata instances,
+        bytes32[] memory vka
+    ) internal returns (bool result) {
         assembly {
             // Read EC point (x, y) at (proof_cptr, proof_cptr + 0x20),
             // and check if the point is on affine plane,
@@ -843,19 +929,6 @@ contract Halo2VerifierReusable {
                 // Read the free memory ptr
                 vka_end := mload(0x40)
 
-                // compute hash of vka_digest and store it into memory
-                mstore(vka_end, keccak256(add(vka, 0x20), mload(vka)))
-                
-                // store the slot of the registered_vkas mapping in memory too
-                mstore(add(vka_end, 0x20), registeredVkas.slot)
-
-                // Check if the vka_digest is in the registered_vkas mapping.
-                // If not revert
-                if eq(sload(keccak256(vka_end, 0x40)), 0x00){
-                    // vka_digest not registered yet
-                    revert(0x00, 0x00)
-                }
-
                 // copy the vka_digest to the vka_end location
                 mstore(vka_end, mload({{ vk_const_offsets["vk_digest"]|hex() }}))
 
@@ -1520,10 +1593,7 @@ contract Halo2VerifierReusable {
             if iszero(success) {
                 revert(0x00, 0x00)
             }
-
-            // Return 1 as result if everything succeeds
-            mstore(0x00, 1)
-            return(0x00, 0x20)
+            result := success
         }
     }
 }

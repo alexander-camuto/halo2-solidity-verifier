@@ -51,7 +51,10 @@ pub struct SolidityGenerator<'a> {
     params: &'a ParamsKZG<bn256::Bn256>,
     vk: &'a VerifyingKey<bn256::G1Affine>,
     scheme: BatchOpenScheme,
-    num_instances: usize,
+    num_instances: Vec<usize>,
+    scales: Vec<usize>,
+    decimals: usize,
+    hash_count: usize,
     acc_encoding: Option<AccumulatorEncoding>,
     meta: ConstraintSystemMeta,
 }
@@ -116,7 +119,10 @@ impl<'a> SolidityGenerator<'a> {
         params: &'a ParamsKZG<bn256::Bn256>,
         vk: &'a VerifyingKey<bn256::G1Affine>,
         scheme: BatchOpenScheme,
-        num_instances: usize,
+        num_instances: &[usize],
+        scales: &[usize], // scaling data of the fixed point representation of the instances
+        decimals: Option<usize>, // The decimals preserved in the on the chain rescaled values from felt instances -> floats. If none we use default of 18 (1e18 precision)
+        hash_count: Option<usize>, // The number of processed values in the circuit (max of 3)
     ) -> Self {
         assert_ne!(vk.cs().num_advice_columns(), 0);
         assert!(
@@ -135,12 +141,32 @@ impl<'a> SolidityGenerator<'a> {
             BatchOpenScheme::Bdfg21,
             "BatchOpenScheme::Gwc19 is not yet implemented"
         );
+        assert_eq!(
+            num_instances.len(),
+            scales.len(),
+            "num_instances and scales must have the same length"
+        );
+        assert!(
+            hash_count.unwrap_or(0) < 4,
+            "hash count must be less than 3"
+        );
+
+        // If decimals is None, we use the default of 18 (1e18 precision)
+        let decimals = decimals.unwrap_or(18);
+
+        assert!(
+            decimals <= 38,
+            "decimals must be less than or equal to 38 to prevent overflows for on-chain rescaling"
+        );
 
         Self {
             params,
             vk,
             scheme,
-            num_instances,
+            num_instances: num_instances.to_vec(),
+            scales: scales.to_vec(),
+            hash_count: hash_count.unwrap_or(0),
+            decimals,
             acc_encoding: None,
             meta: ConstraintSystemMeta::new(vk.cs()),
         }
@@ -233,7 +259,6 @@ impl<'a> SolidityGenerator<'a> {
             ("num_instances", U256::from(0)),
             ("num_evals", U256::from(0)),
             ("challenges_offset", U256::from(0)),
-            ("fsm_challenges", U256::from(0)), // The fsm position for the challenges section.
             ("k", U256::from(0)),
             ("n_inv", U256::from(0)),
             ("omega", U256::from(0)),
@@ -259,6 +284,7 @@ impl<'a> SolidityGenerator<'a> {
             ("permutation_computations_len_offset", U256::from(0)),
             ("lookup_computations_len_offset", U256::from(0)),
             ("pcs_computations_len_offset", U256::from(0)),
+            ("rescaling_computations_len_offset", U256::from(0)),
             ("num_neg_lagranges", U256::from(0)),
         ];
 
@@ -310,7 +336,7 @@ impl<'a> SolidityGenerator<'a> {
         // Fill in the actual values where applicable
         let domain = self.vk.get_domain();
         let vk_digest = fr_to_u256(vk_transcript_repr(self.vk));
-        let num_instances = U256::from(self.num_instances);
+        let num_instances = U256::from(self.num_instances.iter().sum::<usize>());
         let k = U256::from(domain.k());
         let n_inv = fr_to_u256(bn256::Fr::from(1 << domain.k()).invert().unwrap());
         let omega = fr_to_u256(domain.get_omega());
@@ -451,59 +477,7 @@ impl<'a> SolidityGenerator<'a> {
             Gwc19 => unimplemented!(),
         };
 
-        let num_advices = self.meta.num_advices();
-        let num_user_challenges = self.meta.num_challenges();
-        // truncate the last elements of num_user_challenges to match the length of num_advices.
-        let num_user_challenges = num_user_challenges
-            .iter()
-            .take(num_advices.len())
-            .copied()
-            .collect::<Vec<_>>();
-
-        let mut max_advices_value = 0; // Initialize variable to track the maximum value of *num_advices * 0x40
-
-        let num_advices_user_challenges: Vec<U256> = {
-            let mut packed_words: Vec<U256> = vec![U256::from(0)];
-            let mut bit_counter = 8;
-            let mut last_idx = 0;
-            for (num_advices, num_user_challenges) in
-                num_advices.iter().zip(num_user_challenges.iter())
-            {
-                let offset = 24;
-                let next_bit_counter = bit_counter + offset;
-                if next_bit_counter > 256 {
-                    last_idx += 1;
-                    packed_words.push(U256::from(0));
-                    bit_counter = 0;
-                }
-
-                let advices_value = *num_advices * 0x40;
-
-                // Ensure that the packed num_advices and num_user_challenges data doesn't overflow.
-                assert!(
-                    advices_value < 0x10000,
-                    "num_advices * 0x40 must be less than 0x10000"
-                );
-                assert!(
-                    *num_user_challenges < 0x100,
-                    "num_user_challenges must be less than 0x100"
-                );
-
-                // Track the maximum value of *num_advices * 0x40
-                if advices_value > max_advices_value {
-                    max_advices_value = advices_value;
-                }
-
-                packed_words[last_idx] |= U256::from(advices_value) << bit_counter;
-                bit_counter += 16;
-                packed_words[last_idx] |= U256::from(*num_user_challenges) << bit_counter;
-                bit_counter += 8;
-            }
-            let packed_words_len = packed_words.len();
-            // Encode the length of the exprs vec in the first word
-            packed_words[0] |= U256::from(packed_words_len);
-            packed_words
-        };
+        let num_advices_user_challenges = self.generate_challenge_data();
 
         // Iterate through the `num_advices_user_challenges` and update corresponding values in `constants`
         for (i, value) in num_advices_user_challenges.iter().enumerate() {
@@ -517,6 +491,8 @@ impl<'a> SolidityGenerator<'a> {
             );
         }
 
+        let rescaling_computations = self.generate_rescaling_data();
+
         // Update constants
         let first_quotient_x_cptr = dummy_data.quotient_comm_cptr;
         let last_quotient_x_cptr = first_quotient_x_cptr + 2 * (self.meta.num_quotients - 1);
@@ -528,6 +504,8 @@ impl<'a> SolidityGenerator<'a> {
             permutations_computations_len_offset + (0x20 * permutation_computations_dummy.len());
         let pcs_computations_len_offset =
             lookup_computations_len_offset + (0x20 * lookup_computations_dummy.len());
+        let rescaling_computations_len_offset =
+            pcs_computations_len_offset + (0x20 * pcs_computations_dummy.len());
 
         set_constant_value(
             &mut dummy_vk.constants,
@@ -560,6 +538,12 @@ impl<'a> SolidityGenerator<'a> {
             U256::from(pcs_computations_len_offset),
         );
 
+        set_constant_value(
+            &mut dummy_vk.constants,
+            "rescaling_computations_len_offset",
+            U256::from(rescaling_computations_len_offset),
+        );
+
         // Recreate the vk with the correct shape
         let mut vk = Halo2VerifyingArtifact {
             constants: dummy_vk.constants,
@@ -570,6 +554,7 @@ impl<'a> SolidityGenerator<'a> {
             permutation_computations: permutation_computations_dummy,
             lookup_computations: lookup_computations_dummy,
             pcs_computations: pcs_computations_dummy,
+            rescaling_computations,
         };
 
         // Now generate the real fsm with a vk that has the correct length
@@ -750,6 +735,110 @@ impl<'a> SolidityGenerator<'a> {
             }
             _ => fsm_usage,
         }
+    }
+
+    fn generate_challenge_data(&self) -> Vec<U256> {
+        let num_advices = self.meta.num_advices();
+        let num_user_challenges = self.meta.num_challenges();
+        // truncate the last elements of num_user_challenges to match the length of num_advices.
+        let num_user_challenges = num_user_challenges
+            .iter()
+            .take(num_advices.len())
+            .copied()
+            .collect::<Vec<_>>();
+
+        let mut max_advices_value = 0; // Initialize variable to track the maximum value of *num_advices * 0x40
+
+        let num_advices_user_challenges: Vec<U256> = {
+            let mut packed_words: Vec<U256> = vec![U256::from(0)];
+            let mut bit_counter = 8;
+            let mut last_idx = 0;
+            for (num_advices, num_user_challenges) in
+                num_advices.iter().zip(num_user_challenges.iter())
+            {
+                let offset = 24;
+                let next_bit_counter = bit_counter + offset;
+                if next_bit_counter > 256 {
+                    last_idx += 1;
+                    packed_words.push(U256::from(0));
+                    bit_counter = 0;
+                }
+
+                let advices_value = *num_advices * 0x40;
+
+                // Ensure that the packed num_advices and num_user_challenges data doesn't overflow.
+                assert!(
+                    advices_value < 0x10000,
+                    "num_advices * 0x40 must be less than 0x10000"
+                );
+                assert!(
+                    *num_user_challenges < 0x100,
+                    "num_user_challenges must be less than 0x100"
+                );
+
+                // Track the maximum value of *num_advices * 0x40
+                if advices_value > max_advices_value {
+                    max_advices_value = advices_value;
+                }
+
+                packed_words[last_idx] |= U256::from(advices_value) << bit_counter;
+                bit_counter += 16;
+                packed_words[last_idx] |= U256::from(*num_user_challenges) << bit_counter;
+                bit_counter += 8;
+            }
+            let packed_words_len = packed_words.len();
+            // Ensure packed_words_len is less than 0x100
+            assert!(
+                packed_words_len < 0x100,
+                "packed_words_len must be less than 0x100"
+            );
+            // Encode the length of the exprs vec in the first word
+            packed_words[0] |= U256::from(packed_words_len);
+            packed_words
+        };
+        num_advices_user_challenges
+    }
+
+    fn generate_rescaling_data(&self) -> Vec<U256> {
+        // Generate rescaling computations words.
+        // The way it will work is that the first 8 bits of the word will contain the number of words the
+        // rescaling data will take up. The next 8 bits will contain the decimals. The next 8 bits will conatin the number of hashes (we don't rescale these)
+        // The rest of the bits will contain scales data, where next 16 bits contains the number of instances the scaling applies to
+        // and the next 8 bits will contain the scale value. This pattern repeats until all the instances are covered.
+        let mut packed_words: Vec<U256> = vec![U256::from(0)];
+        let mut bit_counter = 24;
+        let mut last_idx = 0;
+        for (scale, num_instances) in self.scales.iter().zip(self.num_instances.iter()) {
+            let offset = 24; // 16 bits for length and 8 bits for scale
+            let next_bit_counter = bit_counter + offset;
+            if next_bit_counter > 256 {
+                last_idx += 1;
+                packed_words.push(U256::from(0));
+                bit_counter = 0;
+            }
+
+            // Ensure that the packed num_advices and num_user_challenges data doesn't overflow.
+            assert!(*scale < 0x100, "scale must be less than 0x100");
+            assert!(
+                *num_instances < 0x10000,
+                "num_instances must be less than 0x10000"
+            );
+
+            packed_words[last_idx] |= U256::from(*num_instances) << bit_counter;
+            bit_counter += 16;
+            packed_words[last_idx] |= U256::from(*scale) << bit_counter;
+            bit_counter += 8;
+        }
+        let packed_words_len = packed_words.len();
+        assert!(
+            packed_words_len < 0x100,
+            "packed_words_len must be less than 0x100"
+        );
+        assert!(self.decimals < 0x100, "decimals must be less than 0x100");
+        packed_words[0] |= U256::from(packed_words_len);
+        packed_words[0] |= U256::from(self.decimals) << 8;
+        packed_words[0] |= U256::from(self.hash_count) << 16;
+        packed_words
     }
 }
 
