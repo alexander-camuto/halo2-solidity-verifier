@@ -59,7 +59,7 @@ contract Halo2VerifierReusable {
         success = _verifyProof(proof, instances, vka);
         assembly {
             // Perform the rescaling of the instances
-            let rescaled_mptr := rescaled_instances
+            let rescaled_mptr := 0x40
             let instances_len := mul(instances.length, 0x20)
             // fetch the rescaling data from the vk (last word of the vk)
             let rescaling_data_cptr := add(add(instances.offset, instances_len), vka_length)
@@ -85,7 +85,7 @@ contract Halo2VerifierReusable {
                     let num_instances := and(rescaling_data, PTR_BITMASK)
                     rescaling_data := shr(16, rescaling_data)
                     // extract the scale value (bits preserved in the fixed point representation of the instance)
-                    let scale := shl(1, and(rescaling_data, BYTE_FLAG_BITMASK))
+                    let scale := shl(and(rescaling_data, BYTE_FLAG_BITMASK), 1)
                     rescaling_data := shr(8, rescaling_data)
                     for { let j := instance_cptr } lt(j, add(num_instances, instance_cptr)) { j := add(j, 0x20) } {
                         let instance := calldataload(j)
@@ -94,7 +94,7 @@ contract Halo2VerifierReusable {
                             instance := sub(R, instance)
                             neg := 1
                         }
-                        // Perform on-chain rounding
+                        // Perform on-chain rounding]
                         let output := add(
                             div(mul(instance, decimals), scale), 
                                 gt(add(
@@ -116,6 +116,9 @@ contract Halo2VerifierReusable {
                 }
                 rescaling_data := calldataload(rescaling_data_cptr)
             }
+            mstore(0x0, 0x01)
+            mstore(0x20, vka_digest)
+            return(0x0, rescaled_mptr)
         }
     }
 
