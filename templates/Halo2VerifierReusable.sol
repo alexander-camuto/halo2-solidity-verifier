@@ -25,7 +25,7 @@ contract Halo2VerifierReusable {
         bytes32[] memory vka
     ) public returns (bytes32 vka_digest) {
         assembly {
-            vka_digest := keccak256(add(vka, 0x20), mload(vka))
+            vka_digest := keccak256(add(vka, 0x20), mul(mload(vka), 0x20))
         }
         registeredVkas[vka_digest] = true;
         emit VkaRegistered(msg.sender, vka_digest, vka);
@@ -50,17 +50,20 @@ contract Halo2VerifierReusable {
         uint256[] calldata instances,
         bytes32[] memory vka
     ) external returns (bool success, bytes32 vka_digest, int256[] memory rescaled_instances) {
+        uint256 vka_length;
         assembly {
-            vka_digest := keccak256(add(vka, 0x20), mload(vka))
+            vka_length := mul(mload(vka), 0x20)
+            vka_digest := keccak256(add(vka, 0x20), vka_length)
         }
         require(registeredVkas[vka_digest], "VKA not registered");
         success = _verifyProof(proof, instances, vka);
         assembly {
             // Perform the rescaling of the instances
             let rescaled_mptr := rescaled_instances
-            // fetch the rescaling data from the vk
-            let rescaling_data_ptr := {{ vk_const_offsets["rescaling_computations_len_offset"]|hex() }}
-            let rescaling_data := mload(rescaling_data_ptr)
+            let instances_len := mul(instances.length, 0x20)
+            // fetch the rescaling data from the vk (last word of the vk)
+            let rescaling_data_cptr := add(add(instances.offset, instances_len), vka_length)
+            let rescaling_data := calldataload(rescaling_data_cptr)
             // extract num_words 
             let num_words := and(rescaling_data, BYTE_FLAG_BITMASK)
             rescaling_data := shr(8, rescaling_data)
@@ -71,18 +74,18 @@ contract Halo2VerifierReusable {
             let num_hashes := and(rescaling_data, BYTE_FLAG_BITMASK)
             rescaling_data := shr(8, rescaling_data)
             // instance_cptr offset by the number of hashes (we don't want to rescale hashes)
-            let instance_cptr := add(instances.offset, mul(0x20, num_hashes))
+            let instance_cptr := add(instances.offset, num_hashes)
             // store the length of the rescaled instances
-            mstore(rescaled_mptr, sub(mload({{ vk_const_offsets["num_instances"]|hex() }}), num_hashes))
+            mstore(rescaled_mptr, sub(instances_len, num_hashes))
             rescaled_mptr := add(rescaled_mptr, 0x20)
             for { let i := 0 } lt(i, num_words) { i := add(i, 1) } {
-                rescaling_data_ptr := add(rescaling_data_ptr, 0x20)
+                rescaling_data_cptr := add(rescaling_data_cptr, 0x20)
                 for { } rescaling_data { } {
                     // extract num_instances
                     let num_instances := and(rescaling_data, PTR_BITMASK)
                     rescaling_data := shr(16, rescaling_data)
                     // extract the scale value (bits preserved in the fixed point representation of the instance)
-                    let scale := shl(1, and(rescaling_data, PTR_BITMASK))
+                    let scale := shl(1, and(rescaling_data, BYTE_FLAG_BITMASK))
                     rescaling_data := shr(8, rescaling_data)
                     for { let j := instance_cptr } lt(j, add(num_instances, instance_cptr)) { j := add(j, 0x20) } {
                         let instance := calldataload(j)
@@ -109,9 +112,9 @@ contract Halo2VerifierReusable {
                         mstore(rescaled_mptr, output)
                         rescaled_mptr := add(rescaled_mptr, 0x20)
                     }
-                    instance_cptr := add(instance_cptr, add(num_instances, 0x20))
+                    instance_cptr := add(instance_cptr, num_instances)
                 }
-                rescaling_data := mload(rescaling_data_ptr)
+                rescaling_data := calldataload(rescaling_data_cptr)
             }
         }
     }

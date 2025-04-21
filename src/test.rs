@@ -66,8 +66,8 @@ fn run_render<C: halo2::TestCircuit<Fr>>() {
         Bdfg21,
         &[instances.len()],
         &default_scales,
-        Some(default_decimals),
-        None,
+        default_decimals,
+        0,
     )
     .set_acc_encoding(acc_encoding);
     let verifier_solidity = generator.render().unwrap();
@@ -107,7 +107,7 @@ fn run_render_separately<C: halo2::TestCircuit<Fr>>() {
     let (params, vk, instances, _) =
         halo2::create_testdata_bdfg21::<C>(C::min_k(), acc_encoding, std_rng());
 
-    let default_scales = [7];
+    let default_scales = [26];
     let default_decimals = 18;
 
     let generator = SolidityGenerator::new(
@@ -116,8 +116,8 @@ fn run_render_separately<C: halo2::TestCircuit<Fr>>() {
         Bdfg21,
         &[instances.len()],
         &default_scales,
-        Some(default_decimals),
-        None,
+        default_decimals,
+        0,
     )
     .set_acc_encoding(acc_encoding);
     let (verifier_solidity, _vk_solidity) = generator.render_separately().unwrap();
@@ -142,8 +142,8 @@ fn run_render_separately<C: halo2::TestCircuit<Fr>>() {
             Bdfg21,
             &[instances.len()],
             &default_scales,
-            Some(default_decimals),
-            None,
+            default_decimals,
+            0,
         )
         .set_acc_encoding(acc_encoding);
 

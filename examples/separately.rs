@@ -15,8 +15,7 @@ fn main() {
     let params = setup(K_RANGE, &mut rng);
 
     let vk = keygen_vk(&params[&K_RANGE.start], &StandardPlonk::default()).unwrap();
-    let generator =
-        SolidityGenerator::new(&params[&K_RANGE.start], &vk, Bdfg21, &[0], &[0], None, None);
+    let generator = SolidityGenerator::new(&params[&K_RANGE.start], &vk, Bdfg21, &[0], &[0], 18, 0);
     let (verifier_solidity, _) = generator.render_separately().unwrap();
     save_solidity("Halo2VerifierReusable.sol", &verifier_solidity);
 
@@ -39,8 +38,8 @@ fn main() {
             Bdfg21,
             &[num_instances],
             &[0],
-            None,
-            None,
+            18,
+            0,
         );
         let (_verifier_solidity, vka_words) = generator.render_separately_vka_words().unwrap();
 

@@ -52,7 +52,7 @@ pub struct SolidityGenerator<'a> {
     vk: &'a VerifyingKey<bn256::G1Affine>,
     scheme: BatchOpenScheme,
     num_instances: Vec<usize>,
-    scales: Vec<usize>,
+    scales: Vec<i32>,
     decimals: usize,
     hash_count: usize,
     acc_encoding: Option<AccumulatorEncoding>,
@@ -120,9 +120,9 @@ impl<'a> SolidityGenerator<'a> {
         vk: &'a VerifyingKey<bn256::G1Affine>,
         scheme: BatchOpenScheme,
         num_instances: &[usize],
-        scales: &[usize], // scaling data of the fixed point representation of the instances
-        decimals: Option<usize>, // The decimals preserved in the on the chain rescaled values from felt instances -> floats. If none we use default of 18 (1e18 precision)
-        hash_count: Option<usize>, // The number of processed values in the circuit (max of 3)
+        scales: &[i32], // scaling data of the fixed point representation of the instances
+        decimals: usize, // The decimals preserved in the on the chain rescaled values from felt instances -> floats. If none we use default of 18 (1e18 precision)
+        hash_count: usize, // The number of processed values in the circuit (max of 3)
     ) -> Self {
         assert_ne!(vk.cs().num_advice_columns(), 0);
         assert!(
@@ -146,13 +146,9 @@ impl<'a> SolidityGenerator<'a> {
             scales.len(),
             "num_instances and scales must have the same length"
         );
-        assert!(
-            hash_count.unwrap_or(0) < 4,
-            "hash count must be less than 3"
-        );
+        assert!(hash_count < 4, "hash count must be less than 3");
 
         // If decimals is None, we use the default of 18 (1e18 precision)
-        let decimals = decimals.unwrap_or(18);
 
         assert!(
             decimals <= 38,
@@ -165,7 +161,7 @@ impl<'a> SolidityGenerator<'a> {
             scheme,
             num_instances: num_instances.to_vec(),
             scales: scales.to_vec(),
-            hash_count: hash_count.unwrap_or(0),
+            hash_count,
             decimals,
             acc_encoding: None,
             meta: ConstraintSystemMeta::new(vk.cs()),
@@ -336,7 +332,7 @@ impl<'a> SolidityGenerator<'a> {
         // Fill in the actual values where applicable
         let domain = self.vk.get_domain();
         let vk_digest = fr_to_u256(vk_transcript_repr(self.vk));
-        let num_instances = U256::from(self.num_instances.iter().sum::<usize>());
+        let num_instances = U256::from(self.num_instances.iter().sum::<usize>() + self.hash_count);
         let k = U256::from(domain.k());
         let n_inv = fr_to_u256(bn256::Fr::from(1 << domain.k()).invert().unwrap());
         let omega = fr_to_u256(domain.get_omega());
@@ -816,15 +812,17 @@ impl<'a> SolidityGenerator<'a> {
                 packed_words.push(U256::from(0));
                 bit_counter = 0;
             }
+            // scale num_instances by 0x20
+            let num_instances = *num_instances * 0x20;
 
             // Ensure that the packed num_advices and num_user_challenges data doesn't overflow.
             assert!(*scale < 0x100, "scale must be less than 0x100");
             assert!(
-                *num_instances < 0x10000,
+                num_instances < 0x10000,
                 "num_instances must be less than 0x10000"
             );
 
-            packed_words[last_idx] |= U256::from(*num_instances) << bit_counter;
+            packed_words[last_idx] |= U256::from(num_instances) << bit_counter;
             bit_counter += 16;
             packed_words[last_idx] |= U256::from(*scale) << bit_counter;
             bit_counter += 8;
@@ -837,7 +835,7 @@ impl<'a> SolidityGenerator<'a> {
         assert!(self.decimals < 0x100, "decimals must be less than 0x100");
         packed_words[0] |= U256::from(packed_words_len);
         packed_words[0] |= U256::from(self.decimals) << 8;
-        packed_words[0] |= U256::from(self.hash_count) << 16;
+        packed_words[0] |= U256::from(self.hash_count * 0x20) << 16;
         packed_words
     }
 }
