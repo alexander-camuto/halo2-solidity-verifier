@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-halo2_proofs = { git = "https://github.com/zkonduit/halo2#0654e92bdf725fd44d849bfef3643870a8c7d50b", package = "halo2_proofs" }
+halo2_proofs = { git = "https://github.com/zkonduit/halo2", package = "halo2_proofs" }
 askama = { version = "0.12.0", features = ["config"], default-features = false }
 hex = "0.4.3"
 ruint = "1.8.0"
@@ -31,6 +31,3 @@ mv-lookup = ["halo2_proofs/mv-lookup", "halo2_maingate/mv-lookup"]
 [[example]]
 name = "separately"
 required-features = ["evm"]
-
-[patch.'https://github.com/zkonduit/halo2']
-halo2_proofs = { git = "https://github.com/zkonduit/halo2#0654e92bdf725fd44d849bfef3643870a8c7d50b", package = "halo2_proofs" }
